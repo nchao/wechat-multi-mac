@@ -4,7 +4,9 @@
 
 > **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a small AppleScript app with a GUI, plus a CLI script.
 
-<!-- 建议在此处放一张 GUI 列表的截图 -->
+<p align="center">
+  <img src="docs/screenshot.png" width="520" alt="微信多开主界面：列出原版与各副本，底部为增删入口">
+</p>
 
 ## 原理
 
