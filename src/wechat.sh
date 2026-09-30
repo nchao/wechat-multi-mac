@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # macOS 微信多开
+# 核心方法来自 https://github.com/engrecho/Mac_dual_wechat
+#
 # 用法: wechat.sh <名字> [名字...]        生成/启动一个或多个副本
 #       wechat.sh --list                 列出已有副本（给 GUI 选择列表用）
 #       wechat.sh --uninstall <名字>...  卸载副本（app 移入废纸篓，数据目录默认保留）
 #       wechat.sh --uninstall --purge <名字>...  连同数据目录一起移入废纸篓
-#   名字 = 副本名，不含 .app（脚本自己拼），例: wechat.sh WeChat4 / wechat.sh 工作号
+#   名字 = 副本名，不含 .app（脚本自己拼），例: wechat.sh WeChat4 / wechat.sh 小号
 #   生成流程：从 WeChat.app 复制成 /Applications/<名字>.app，改 CFBundleIdentifier
 #   后重签名再启动。副本已存在且 id 正确就直接启动。
 set -uo pipefail

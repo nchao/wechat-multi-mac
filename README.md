@@ -2,7 +2,9 @@
 
 在 macOS 上同时登录多个微信账号，每个副本有独立的聊天数据，互不干扰。不需要管理员密码，不注入代码，不修改原版微信。
 
-> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a small AppleScript app with a GUI, plus a CLI script.
+核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)，本项目在其基础上加了图形界面、副本管理和签名校验，详见[致谢](#致谢)。
+
+> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a small AppleScript app with a GUI, plus a CLI script. Built on the method from [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat).
 
 <p align="center">
   <img src="docs/screenshot.png" width="520" alt="微信多开主界面：列出原版与各副本，底部为增删入口">
@@ -128,6 +130,18 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 本工具不修改原版微信，不注入代码，不触碰微信的网络通信或协议。所做的只是复制应用、改自己副本的 bundle id、用 adhoc 签名让系统接受这个副本。
 
 多开可能不符合微信的用户协议，请自行判断。副本使用未受信任的 adhoc 签名，某些依赖签名的系统功能（如「访达」共享扩展）可能不可用。
+
+## 致谢
+
+核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)——复制 `WeChat.app`、改 `CFBundleIdentifier`、adhoc 重签名这三步是那个项目总结并验证的，也是本工具的基础。那边的 README 还维护了一份微信版本兼容记录，值得一看。
+
+本项目在此之上做的是工程化：
+
+- 图形界面，列表式选择，多选批量启动，带进度提示
+- 新建与卸载副本，卸载时可选择保留或一并清除聊天数据
+- 副本名到 bundle id 的映射规则固定，便于重建后接回原有聊天数据
+- 校验签名后的实际 identifier，不一致时明确报错（副本 id 若与原版相同，点图标会跳回原版窗口，这种失败原本很难察觉）
+- 去掉了 `sudo`：`/Applications` 对 admin 组可写，微信 app 也归当前用户，三步操作实测都不需要提权
 
 ## License
 

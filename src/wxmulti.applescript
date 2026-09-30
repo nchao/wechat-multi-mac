@@ -1,6 +1,8 @@
 -- 微信多开 (self-contained)
 -- 复制 WeChat.app 为独立副本，改 CFBundleIdentifier 后 adhoc 重签名，实现账号数据隔离。
 -- 不需要管理员密码：/Applications 对 admin 组可写，微信 app 归当前用户。
+--
+-- 核心方法来自 https://github.com/engrecho/Mac_dual_wechat
 
 property baseApp : "/Applications/WeChat.app"
 property baseId : "com.tencent.xinWeChat"
