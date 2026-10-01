@@ -4,7 +4,7 @@
 
 核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)，本项目在其基础上加了图形界面、副本管理和签名校验，详见[致谢](#致谢)。
 
-> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a small AppleScript app with a GUI, plus a CLI script. Built on the method from [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat).
+> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a native AppKit app (table view with ＋/－ controls), plus a CLI script. Built on the method from [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat).
 
 <p align="center">
   <img src="docs/screenshot.png" width="520" alt="微信多开主界面：列出原版与各副本，底部为增删入口">
@@ -32,25 +32,18 @@ cd wechat-multi-mac
 ./build.sh
 ```
 
-编译出「微信多开.app」并装到 `/Applications`。需要 macOS 自带的 `osacompile`，无第三方依赖。
+编译出「微信多开.app」并装到 `/Applications`。只需要 Xcode 命令行工具（`xcode-select --install`），无第三方依赖。
 
 ## 使用
 
-双击「微信多开.app」，弹出列表：
+双击「微信多开.app」，窗口列出原版微信和所有副本，带运行状态与各自的聊天数据大小：
 
-```
-WeChat（原版）
-WeChat2
-WeChat3
-＋  新建副本
-－  卸载副本
-```
+- 双击一行，或选中后点「启动」。支持 Cmd 多选批量启动；原版和已在运行的直接激活窗口，未配置的副本自动完成改 id、签名、启动
+- `＋` 新建副本，默认名填下一个空闲序号，也可以空格分隔一次建多个
+- `－` 卸载选中副本，会问聊天数据是保留还是一起删。原版不能卸载
+- 标为 `⚠︎ 标识未生效` 的副本，其 bundle id 仍与原版相同，点图标会跳回原版窗口——选中启动一次即可修好
 
-- 选中一个或多个（按 Cmd 多选）点确定 → 启动。原版直接激活窗口，副本自动完成改 id、签名、启动
-- `＋` → 输入名字新建副本，默认填下一个空闲序号
-- `－` → 多选卸载，会问聊天数据是保留还是一起删
-
-增删完会回到列表，不用重新打开。启动过程有进度提示（复制 1.4G、签名约 3 秒、等微信响应）。
+耗时步骤有进度条（复制 1.4G 约 1 秒、签名约 3 秒、等微信响应最多 20 秒）。`Cmd+R` 刷新列表。
 
 ### 命令行
 
@@ -121,7 +114,8 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 
 ## 兼容性
 
-- 在 macOS 15.7 / Intel 上开发和验证
+- 在 macOS 15.7 / Intel 上开发和验证，界面要求 macOS 13+
+- 编译需要 Xcode 命令行工具（Swift 6.2 验证通过）
 - Apple Silicon 未实测，逻辑本身不涉及架构，理论可用
 - 微信 4.1.13 验证通过
 
@@ -137,7 +131,7 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 
 本项目在此之上做的是工程化：
 
-- 图形界面，列表式选择，多选批量启动，带进度提示
+- 原生 AppKit 界面：表格列出所有实例及运行状态、聊天数据大小，底部 ＋/− 增删，多选批量启动带进度条
 - 新建与卸载副本，卸载时可选择保留或一并清除聊天数据
 - 副本名到 bundle id 的映射规则固定，便于重建后接回原有聊天数据
 - 校验签名后的实际 identifier，不一致时明确报错（副本 id 若与原版相同，点图标会跳回原版窗口，这种失败原本很难察觉）
