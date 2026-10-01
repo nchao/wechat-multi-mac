@@ -17,6 +17,7 @@ struct Instance {
     var running: Bool
     var dataSize: String      // 人类可读的数据目录大小，"—" 表示还没有数据
     var idMismatch: Bool      // 签名 id 与期望不符：点图标会跳回原版窗口
+    var customIcon: Bool = false
 
     var binPath: String { appPath + "/" + Core.binRel }
 }
@@ -87,8 +88,10 @@ enum Core {
             .trimmingCharacters(in: .whitespaces) ?? "—"
     }
 
-    /// 扫描 /Applications，原版排在最前，其余按名字排序
-    static func scan() -> [Instance] {
+    /// 扫描 /Applications，原版排在最前，其余按名字排序。
+    /// withSize=false 时跳过 du（几个 G 的目录冷启动要好几秒），数据大小显示为「…」，
+    /// 由调用方随后补算，这样列表能先出来。
+    static func scan(withSize: Bool = true) -> [Instance] {
         var result: [Instance] = []
         let fm = FileManager.default
 
@@ -104,8 +107,9 @@ enum Core {
                 bundleId: currentId(appPath),
                 isBase: isBase,
                 running: isRunning(appPath + "/" + binRel),
-                dataSize: dirSize(containerPath(for: wantId)),
-                idMismatch: !isBase && real != wantId
+                dataSize: withSize ? dirSize(containerPath(for: wantId)) : "…",
+                idMismatch: !isBase && real != wantId,
+                customIcon: !isBase && hasCustomIcon(appPath)
             )
         }
 
@@ -138,5 +142,12 @@ enum Core {
 
     static func icon(for appPath: String) -> NSImage {
         NSWorkspace.shared.icon(forFile: appPath)
+    }
+
+    /// 微信原版靠 CFBundleIconName 从 Assets.car 取图标。换图标时会删掉这个键，
+    /// 让系统改读 AppIcon.icns，所以键不存在就说明换过图标。
+    static func hasCustomIcon(_ appPath: String) -> Bool {
+        let plist = NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")
+        return plist?["CFBundleIconName"] == nil
     }
 }

@@ -2,9 +2,7 @@
 
 在 macOS 上同时登录多个微信账号，每个副本有独立的聊天数据，互不干扰。不需要管理员密码，不注入代码，不修改原版微信。
 
-核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)，本项目在其基础上加了图形界面、副本管理和签名校验，详见[致谢](#致谢)。
-
-> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a native AppKit app (table view with ＋/－ controls), plus a CLI script. Built on the method from [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat).
+> **English**: Run multiple WeChat instances on macOS, each with isolated chat data. Works by copying `WeChat.app`, changing its `CFBundleIdentifier`, and re-signing ad-hoc — no code injection, no admin password, the original app stays untouched. Ships as a native AppKit app (table view with ＋/－ controls, custom icon per copy), plus a CLI script.
 
 <p align="center">
   <img src="docs/screenshot.png" width="520" alt="微信多开主界面：列出原版与各副本，底部为增删入口">
@@ -42,8 +40,20 @@ cd wechat-multi-mac
 - `＋` 新建副本，默认名填下一个空闲序号，也可以空格分隔一次建多个
 - `－` 卸载选中副本，会问聊天数据是保留还是一起删。原版不能卸载
 - 标为 `⚠︎ 标识未生效` 的副本，其 bundle id 仍与原版相同，点图标会跳回原版窗口——选中启动一次即可修好
+- 运行状态实时更新：微信启动或退出后，列表自动刷新，不用手动刷
 
 耗时步骤有进度条（复制 1.4G 约 1 秒、签名约 3 秒、等微信响应最多 20 秒）。`Cmd+R` 刷新列表。
+
+### 自定义副本图标
+
+副本默认和原版同一个图标，Dock 里分不清。选中一个副本点「更换图标…」（或右键），选一张图片：
+
+- 尺寸、比例随意，会自动处理成 macOS 图标规格（圆角方块，四周留透明边，和 Dock 里其他图标一样大）
+- 自动模式：接近正方形的图铺满裁切；横幅、竖条这类明显不方的图完整显示，空白处用图片边缘的颜色填底
+- 手动调整：切换「铺满裁切 / 完整显示」，拖动预览改裁切位置，滑块或滚轮缩放，也可以自己挑底色
+- 右键「恢复微信原图标」可以撤销
+
+换图标要重新签名，副本运行时不能换，先退出它。原图小于 256px 会提示放大后模糊。
 
 ### 命令行
 
@@ -100,9 +110,9 @@ codesign -dv /Applications/WeChat2.app 2>&1 | grep Identifier
 
 没有硬限制，受内存约束。每个副本占 1.4G 磁盘——不过 APFS 写时复制让实际占用远小于此，复制 1.4G 只需约 1 秒。
 
-## 图标
+## 本工具的图标
 
-`icon/wxmulti-icon.py` 用 PIL 生成图标，改里面的 RGB 值可换配色：
+`icon/wxmulti-icon.py` 用 PIL 生成「微信多开.app」自己的图标，改里面的 RGB 值可换配色：
 
 ```bash
 pip install pillow
@@ -116,7 +126,7 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 
 - 在 macOS 15.7 / Intel 上开发和验证，界面要求 macOS 13+
 - 编译需要 Xcode 命令行工具（Swift 6.2 验证通过）
-- Apple Silicon 未实测，逻辑本身不涉及架构，理论可用
+- 编译产物是 universal（arm64 + x86_64），但只在 Intel 上实际跑过，Apple Silicon 未实测
 - 微信 4.1.13 验证通过
 
 ## 说明
@@ -127,15 +137,7 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 
 ## 致谢
 
-核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)——复制 `WeChat.app`、改 `CFBundleIdentifier`、adhoc 重签名这三步是那个项目总结并验证的，也是本工具的基础。那边的 README 还维护了一份微信版本兼容记录，值得一看。
-
-本项目在此之上做的是工程化：
-
-- 原生 AppKit 界面：表格列出所有实例及运行状态、聊天数据大小，底部 ＋/− 增删，多选批量启动带进度条
-- 新建与卸载副本，卸载时可选择保留或一并清除聊天数据
-- 副本名到 bundle id 的映射规则固定，便于重建后接回原有聊天数据
-- 校验签名后的实际 identifier，不一致时明确报错（副本 id 若与原版相同，点图标会跳回原版窗口，这种失败原本很难察觉）
-- 去掉了 `sudo`：`/Applications` 对 admin 组可写，微信 app 也归当前用户，三步操作实测都不需要提权
+核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)。
 
 ## License
 

@@ -30,9 +30,11 @@ APP="$TMP/${APP_NAME}"
 
 echo "编译 Swift 源码..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -o "$APP/Contents/MacOS/${EXEC}" \
-  "$SRC_DIR"/Core.swift "$SRC_DIR"/Operations.swift \
-  "$SRC_DIR"/Window.swift "$SRC_DIR"/main.swift
+# 分别编 arm64 / x86_64 再合并成 universal，Apple Silicon 不用走 Rosetta
+for arch in arm64 x86_64; do
+  swiftc -O -target "${arch}-apple-macos13.0" -o "$TMP/${EXEC}-${arch}" "$SRC_DIR"/*.swift
+done
+lipo -create "$TMP/${EXEC}-arm64" "$TMP/${EXEC}-x86_64" -output "$APP/Contents/MacOS/${EXEC}"
 
 cat > "$APP/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,8 +46,8 @@ cat > "$APP/Contents/Info.plist" << PLIST
   <key>CFBundleName</key><string>微信多开</string>
   <key>CFBundleDisplayName</key><string>微信多开</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0.0</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>2.1.0</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>

@@ -9,6 +9,8 @@ final class MainWindowController: NSWindowController {
     private let scroll = NSScrollView()
     private let addRemove = NSSegmentedControl()
     private let launchButton = NSButton()
+    private let iconButton = NSButton()
+    private var iconEditor: IconEditor?
     private let statusLabel = NSTextField(labelWithString: "")
     private let bar = NSProgressIndicator()
 
@@ -23,6 +25,31 @@ final class MainWindowController: NSWindowController {
         self.init(window: w)
         buildUI()
         reload()
+        observeApps()
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    /// 微信启动或退出时系统会发通知，据此实时更新「状态」列。
+    /// 以前只在 reload 时查一次进程，退出微信后列表仍显示运行中。
+    private func observeApps() {
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification] {
+            nc.addObserver(self, selector: #selector(appStateChanged(_:)), name: name, object: nil)
+        }
+    }
+
+    @objc private func appStateChanged(_ note: Notification) {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let exe = app.executableURL?.path,
+              let i = rows.firstIndex(where: { $0.binPath == exe }) else { return }
+        // 只改这一行的运行状态，不做全量 scan（scan 要跑 du，几个 G 的目录会卡）
+        rows[i].running = (note.name == NSWorkspace.didLaunchApplicationNotification)
+        table.reloadData(forRowIndexes: [i], columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
+        updateButtons()
     }
 
     // MARK: - 构建界面
@@ -33,7 +60,7 @@ final class MainWindowController: NSWindowController {
         let title = NSTextField(labelWithString: "微信实例")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
 
-        let subtitle = NSTextField(labelWithString: "双击一行启动，或选中后点「启动」。＋ 新建副本，－ 卸载。")
+        let subtitle = NSTextField(labelWithString: "双击一行启动。＋ 新建副本，－ 卸载，右键可更换图标。")
         subtitle.font = .systemFont(ofSize: 11)
         subtitle.textColor = .secondaryLabelColor
 
@@ -47,6 +74,7 @@ final class MainWindowController: NSWindowController {
         table.delegate = self
         table.target = self
         table.doubleAction = #selector(launchSelected)
+        table.menu = rowMenu()
 
         let colName = NSTableColumn(identifier: .init("name"))
         colName.title = "名称"
@@ -91,6 +119,12 @@ final class MainWindowController: NSWindowController {
         launchButton.action = #selector(launchSelected)
         launchButton.translatesAutoresizingMaskIntoConstraints = false
 
+        iconButton.title = "更换图标…"
+        iconButton.bezelStyle = .rounded
+        iconButton.controlSize = .small
+        iconButton.target = self
+        iconButton.action = #selector(changeIcon)
+
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -106,7 +140,7 @@ final class MainWindowController: NSWindowController {
         header.alignment = .leading
         header.spacing = 2
 
-        let footer = NSStackView(views: [addRemove, NSView(), statusLabel, launchButton])
+        let footer = NSStackView(views: [addRemove, iconButton, NSView(), statusLabel, launchButton])
         footer.orientation = .horizontal
         footer.spacing = 8
 
@@ -132,13 +166,42 @@ final class MainWindowController: NSWindowController {
 
     // MARK: - 数据
 
+    private var reloadGen = 0
+
+    /// 两段加载：先出不含数据大小的列表，再逐个补算 du。
+    /// 几个 G 的数据目录冷启动 du 要好几秒，不能让整张表等它。
     func reload() {
-        let keep = Set(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].name : nil })
-        rows = Core.scan()
-        table.reloadData()
-        let restore = IndexSet(rows.indices.filter { keep.contains(rows[$0].name) })
-        if !restore.isEmpty { table.selectRowIndexes(restore, byExtendingSelection: false) }
-        updateButtons()
+        reloadGen += 1
+        let gen = reloadGen
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fresh = Core.scan(withSize: false)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, gen == self.reloadGen else { return }
+                let keep = Set(self.selected.map(\.name))
+                self.rows = fresh
+                self.table.reloadData()
+                let restore = IndexSet(self.rows.indices.filter { keep.contains(self.rows[$0].name) })
+                if !restore.isEmpty { self.table.selectRowIndexes(restore, byExtendingSelection: false) }
+                self.updateButtons()
+                self.fillSizes(gen)
+            }
+        }
+    }
+
+    private func fillSizes(_ gen: Int) {
+        let targets = rows.map { ($0.name, Core.containerPath(for: $0.isBase ? Core.baseId : Core.id(for: $0.name))) }
+        DispatchQueue.global(qos: .utility).async {
+            for (name, path) in targets {
+                let size = Core.dirSize(path)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, gen == self.reloadGen,
+                          let i = self.rows.firstIndex(where: { $0.name == name }) else { return }
+                    self.rows[i].dataSize = size
+                    let col = self.table.column(withIdentifier: .init("size"))
+                    if col >= 0 { self.table.reloadData(forRowIndexes: [i], columnIndexes: [col]) }
+                }
+            }
+        }
     }
 
     private func updateButtons() {
@@ -147,6 +210,15 @@ final class MainWindowController: NSWindowController {
         // 只有选中非原版的行才能卸载
         let removable = sel.contains { rows.indices.contains($0) && !rows[$0].isBase }
         addRemove.setEnabled(removable, forSegment: 1)
+        // 换图标只针对单个副本：原版不动，运行中改签名可能让进程异常
+        iconButton.isEnabled = iconTarget != nil
+    }
+
+    /// 可换图标的目标：恰好选中一个、非原版、未运行的副本
+    private var iconTarget: Instance? {
+        let s = selected
+        guard s.count == 1, let i = s.first, !i.isBase, !i.running else { return nil }
+        return i
     }
 
     private var selected: [Instance] {
@@ -241,6 +313,41 @@ final class MainWindowController: NSWindowController {
         })
     }
 
+    // MARK: - 图标
+
+    @objc private func changeIcon() {
+        guard let target = iconTarget, let win = window else {
+            if let s = selected.first, s.running {
+                warn("请先退出微信", "「\(s.name)」正在运行。换图标需要重新签名，退出后再换。")
+            }
+            return
+        }
+        let editor = IconEditor(instance: target)
+        iconEditor = editor
+        editor.begin(on: win) { [weak self] ok in
+            self?.iconEditor = nil
+            if ok { self?.reload() }
+        }
+    }
+
+    @objc private func restoreIcon() {
+        guard let target = iconTarget, target.customIcon else { return }
+        do {
+            try IconMaker.restore(target)
+            reload()
+        } catch {
+            warn("恢复失败", error.localizedDescription)
+        }
+    }
+
+    private func rowMenu() -> NSMenu {
+        let m = NSMenu()
+        m.delegate = self
+        // 关掉自动启用，菜单项的 isEnabled 才由 menuNeedsUpdate 决定
+        m.autoenablesItems = false
+        return m
+    }
+
     // MARK: - 状态显示
 
     private func setBusy(_ busy: Bool) {
@@ -248,6 +355,7 @@ final class MainWindowController: NSWindowController {
         bar.doubleValue = 0
         launchButton.isEnabled = !busy
         addRemove.isEnabled = !busy
+        iconButton.isEnabled = !busy
         table.isEnabled = !busy
         if !busy { statusLabel.stringValue = "" }
     }
@@ -351,5 +459,41 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         updateButtons()
+    }
+}
+
+// MARK: - 右键菜单
+
+extension MainWindowController: NSMenuDelegate {
+    /// 右键点在未选中的行上时，先选中那一行，菜单才对它生效
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let r = table.clickedRow
+        guard rows.indices.contains(r) else { return }
+        if !table.selectedRowIndexes.contains(r) {
+            table.selectRowIndexes([r], byExtendingSelection: false)
+        }
+        let item = rows[r]
+
+        menu.addItem(withTitle: item.running ? "激活窗口" : "启动",
+                     action: #selector(launchSelected), keyEquivalent: "").target = self
+        if item.isBase { return }
+
+        menu.addItem(.separator())
+        let change = menu.addItem(withTitle: "更换图标…", action: #selector(changeIcon), keyEquivalent: "")
+        change.target = self
+        change.isEnabled = iconTarget != nil
+        if item.customIcon {
+            let restore = menu.addItem(withTitle: "恢复微信原图标", action: #selector(restoreIcon), keyEquivalent: "")
+            restore.target = self
+            restore.isEnabled = !item.running
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "在访达中显示", action: #selector(revealInFinder), keyEquivalent: "").target = self
+    }
+
+    @objc private func revealInFinder() {
+        let urls = selected.map { URL(fileURLWithPath: $0.appPath) }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 }
