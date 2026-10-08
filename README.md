@@ -17,10 +17,10 @@ macOS 按 `CFBundleIdentifier` 识别应用。同一个 bundle id 的应用，�
 真正的多开需要三步：
 
 1. 复制 `WeChat.app` 为 `WeChatN.app`
-2. 把副本的 `CFBundleIdentifier` 从 `com.tencent.xinWeChat` 改成 `com.tencent.xinWeChatN`
-3. adhoc 重新签名（改了 Info.plist 会让原签名失效）
+2. 把副本的 `CFBundleIdentifier` 从 `com.tencent.xinWeChat` 改成 `com.tencent.xinWeChat.WeChatN`
+3. adhoc 重新签名，并保留原版每个组件的沙盒权限（改了 Info.plist 会让原签名失效）
 
-副本用新 id 启动后，数据目录也变成 `~/Library/Containers/com.tencent.xinWeChatN`，与原版天然隔离，这是账号能分开登录的原因。
+副本用新 id 启动后，数据目录也变成 `~/Library/Containers/com.tencent.xinWeChat.WeChatN`，与原版天然隔离，这是账号能分开登录的原因。
 
 ## 安装
 
@@ -40,7 +40,7 @@ cd wechat-multi-mac
 - `＋` 新建副本，默认名填下一个空闲序号，也可以空格分隔一次建多个
 - `－` 卸载选中副本，会问聊天数据是保留还是一起删。原版不能卸载
 - 标为 `⚠︎ 标识未生效` 的副本，其 bundle id 仍与原版相同，点图标会跳回原版窗口——选中启动一次即可修好
-- 标为 `⚠︎ 需修复` 的副本是 v2.2.0 及更早版本创建的，缺少沙盒权限，部分新号登录时的滑块安全验证可能弹不出来。退出该副本后右键选「修复」，聊天数据和自定义图标都会保留
+- 标为 `⚠︎ 需修复` 的副本是 v2.3.0 及更早版本创建的：要么缺少沙盒权限（新号登录时滑块验证可能弹不出来），要么用的是不带点的旧 id（加上沙盒权限后会一启动就崩）。退出该副本后右键选「修复」，聊天数据和自定义图标都会保留，数据会自动迁移到新 id
 - 运行状态实时更新：微信启动或退出后，列表自动刷新，不用手动刷
 
 耗时步骤有进度条（复制 1.4G 约 1 秒、签名约 3 秒、等微信响应最多 20 秒）。`Cmd+R` 刷新列表。
@@ -87,10 +87,12 @@ cd wechat-multi-mac
 
 | 副本名 | bundle id | 数据目录 |
 |---|---|---|
-| `WeChat2` | `com.tencent.xinWeChat2` | `~/Library/Containers/com.tencent.xinWeChat2` |
+| `WeChat2` | `com.tencent.xinWeChat.WeChat2` | `~/Library/Containers/com.tencent.xinWeChat.WeChat2` |
 | `小号` | `com.tencent.xinWeChat.小号` | `~/Library/Containers/com.tencent.xinWeChat.小号` |
 
 **改名等于换一份全新数据**，已登录的账号不会跟着走。想保留登录态就沿用原来的副本名。
+
+v2.3.0 及更早版本给 `WeChatN` 用的是不带点的 `com.tencent.xinWeChatN`。保留沙盒权限之后，这种 id 会让微信内置的 WeChatAppEx 一启动就崩，所以现在统一用带点的写法。旧副本在列表里会标出 `⚠︎ 需修复`，修复时会把数据目录改名到新 id 下。同一块磁盘内改名，几个 G 的数据也是瞬间完成。
 
 ## 卸载
 
@@ -111,13 +113,17 @@ app 移入废纸篓（不用 `rm`，误删可恢复）。聊天数据默认保�
 codesign -dv /Applications/WeChat2.app 2>&1 | grep Identifier
 ```
 
-两处都应该是 `com.tencent.xinWeChat2`。
+两处都应该是 `com.tencent.xinWeChat.WeChat2`。
 
 **新号登录时手机提示要在新设备验证，副本却不弹滑块验证页**
 
 v2.2.0 及更早版本创建的副本会有这个问题。签名时用的 `codesign --deep` 把原版的沙盒等权限全部丢掉了，副本和它内置的网页组件 WeChatAppEx 都跑在沙盒外。现在签名改成保留每个组件原有的权限（`--preserve-metadata=entitlements`），新建的副本没有这个问题，旧副本在列表里会标出 `⚠︎ 需修复`。
 
 这个修复思路是根据权限差异推断出来的，还没有用真正会触发验证的号确认过。修复后如果还是弹不出来，请提 issue。
+
+**副本第一次打开是英文界面**
+
+微信第一次启动时按进程的 `LANG` 环境变量决定界面语言，选定后就固定下来。从终端带着 `LANG=en_US.UTF-8` 直接执行副本的二进制，就会选成英文。现在工具和 `wechat.sh` 都改用 `open` 启动，和点 Dock 一样，不继承终端的环境变量。已经是英文的副本，在微信「设置 → 通用 → 语言」里改回中文即可。
 
 **微信升级后副本怎么办**
 

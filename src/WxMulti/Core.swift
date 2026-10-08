@@ -18,7 +18,14 @@ struct Instance {
     var dataSize: String      // 人类可读的数据目录大小，"—" 表示还没有数据
     var idMismatch: Bool      // 签名 id 与期望不符：点图标会跳回原版窗口
     var customIcon: Bool = false
-    var needsRepair: Bool = false   // 旧版工具签出来、丢了沙盒 entitlements 的副本
+    var needsRepair: Bool = false   // 旧版工具签出来的副本：丢了沙盒 entitlements，或用的是不带点的旧 id
+
+    /// 数据实际所在容器的 id。旧规则副本迁移前还在旧 id 下
+    var dataId: String {
+        if isBase { return Core.baseId }
+        if let l = Core.legacyId(for: name), bundleId == l { return l }
+        return Core.id(for: name)
+    }
 
     var binPath: String { appPath + "/" + Core.binRel }
 }
@@ -30,16 +37,22 @@ enum Core {
     static let baseId = "com.tencent.xinWeChat"
     static let binRel = "Contents/MacOS/WeChat"
 
-    /// 副本名 → bundle id。规则必须与 ~/Library/Containers 下已有目录一致，
-    /// 否则重建后接不回已登录的账号。
+    /// 副本名 → bundle id，一律是 com.tencent.xinWeChat.<名字>。
+    ///
+    /// 以前 WeChatN 用的是 com.tencent.xinWeChatN（不带点）。这种 id 在保留沙盒
+    /// entitlements 之后，微信内置的 WeChatAppEx 一启动就崩（EXC_BREAKPOINT，
+    /// 线程 task_thread）。实测带点的 com.tencent.xinWeChat.2 / .WeChat2 正常，
+    /// 不带点的 xinWeChat2 / xinWeChat9 / xinWeChatX 都崩，和包内容、数据都无关。
     static func id(for name: String) -> String {
-        if name.hasPrefix("WeChat") {
-            let suffix = String(name.dropFirst(6))
-            if !suffix.isEmpty, suffix.allSatisfy(\.isNumber) {
-                return baseId + suffix
-            }
-        }
-        return baseId + "." + name
+        baseId + "." + name
+    }
+
+    /// 旧规则下 WeChatN 的 id。只用来识别、迁移旧副本，新副本不会再用它
+    static func legacyId(for name: String) -> String? {
+        guard name.hasPrefix("WeChat") else { return nil }
+        let suffix = String(name.dropFirst(6))
+        guard !suffix.isEmpty, suffix.allSatisfy(\.isNumber) else { return nil }
+        return baseId + suffix
     }
 
     static func containerPath(for bundleId: String) -> String {
@@ -114,8 +127,12 @@ enum Core {
             let name = (appPath as NSString).lastPathComponent
                 .replacingOccurrences(of: ".app", with: "")
             guard fm.isExecutableFile(atPath: appPath + "/" + binRel) else { return nil }
-            let wantId = isBase ? baseId : id(for: name)
             let real = signedId(appPath)
+            // 旧规则的 WeChatN 副本（id 不带点）：数据还在旧 id 的容器里，按旧 id 算大小，
+            // 并标为需修复，修复时迁移到新 id
+            let legacy = isBase ? nil : legacyId(for: name)
+            let onLegacy = legacy != nil && real == legacy
+            let wantId = isBase ? baseId : (onLegacy ? legacy! : id(for: name))
             return Instance(
                 name: name,
                 appPath: appPath,
@@ -125,7 +142,7 @@ enum Core {
                 dataSize: withSize ? dirSize(containerPath(for: wantId)) : "…",
                 idMismatch: !isBase && real != wantId,
                 customIcon: !isBase && hasCustomIcon(appPath),
-                needsRepair: !isBase && real == wantId && !isSandboxed(appPath)
+                needsRepair: !isBase && real == wantId && (onLegacy || !isSandboxed(appPath))
             )
         }
 

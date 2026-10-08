@@ -189,7 +189,7 @@ final class MainWindowController: NSWindowController {
     }
 
     private func fillSizes(_ gen: Int) {
-        let targets = rows.map { ($0.name, Core.containerPath(for: $0.isBase ? Core.baseId : Core.id(for: $0.name))) }
+        let targets = rows.map { ($0.name, Core.containerPath(for: $0.dataId)) }
         DispatchQueue.global(qos: .utility).async {
             for (name, path) in targets {
                 let size = Core.dirSize(path)

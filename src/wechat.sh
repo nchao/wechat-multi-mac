@@ -32,13 +32,15 @@ if [[ "${1:-}" == "--from-file" ]]; then
   set -- "${args[@]}"
 fi
 
-# 按名字推导 bundle id，规则与 ~/Library/Containers 下已有的数据目录保持一致
+# 按名字推导 bundle id，一律 com.tencent.xinWeChat.<名字>（带点）。
+# 不带点的 com.tencent.xinWeChatN 在保留沙盒权限后，微信内置的 WeChatAppEx 一启动就崩
 id_for_name() {
-  if [[ "$1" =~ ^WeChat([0-9]+)$ ]]; then
-    echo "${BASE_ID}${BASH_REMATCH[1]}"
-  else
-    echo "${BASE_ID}.$1"
-  fi
+  echo "${BASE_ID}.$1"
+}
+
+# 旧规则下 WeChatN 用过的不带点 id，只用来找旧数据、提示迁移
+legacy_id_for_name() {
+  if [[ "$1" =~ ^WeChat([0-9]+)$ ]]; then echo "${BASE_ID}${BASH_REMATCH[1]}"; fi
 }
 
 # --list: 输出所有「微信副本」的名字（不含 .app），一行一个。
@@ -167,6 +169,12 @@ if [[ ! -x "$bin" ]]; then
 fi
 
 cur_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${app}/Contents/Info.plist" 2>/dev/null)"
+legacy_id="$(legacy_id_for_name "$name")"
+if [[ -n "$legacy_id" && "$cur_id" == "$legacy_id" ]]; then
+  echo "[${name}] 这是旧版创建的副本（id 不带点：${legacy_id}），沙盒下会崩溃，跳过" >&2
+  echo "[${name}] 请用「微信多开.app」右键「修复」，会迁移到 ${want_id} 并保留聊天数据" >&2
+  overall=1; continue
+fi
 if [[ "$cur_id" == "$BASE_ID" || -z "$cur_id" ]]; then
   echo "[${name}] 改 bundle id: ${cur_id:-无} -> ${want_id}"
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${want_id}" "${app}/Contents/Info.plist" \
@@ -192,8 +200,9 @@ if [[ "$real_id" != "$want_id" ]]; then
 fi
 
 echo "[${name}] 启动: ${app}"
-nohup "$bin" >/dev/null 2>&1 &
-disown
+# 用 open 走 LaunchServices，不继承终端的 LANG：终端里 LANG=en_US 时，
+# 直接执行二进制会让微信首次启动选成英文界面
+open -n "$app"
 
 done
 

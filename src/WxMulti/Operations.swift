@@ -72,16 +72,18 @@ enum Ops {
                     registerWithLaunchServices(inst.appPath)
                 }
 
-                // 校验：签名 id 与期望不符时，点图标会激活原版窗口而非副本
+                // 校验：签名 id 与期望不符时，点图标会激活原版窗口而非副本。
+                // 旧规则的不带点 id 也算对，它会被标为需修复，由修复流程迁移
                 let real = Core.signedId(inst.appPath)
-                if real != wantId {
+                if real != wantId && real != Core.legacyId(for: inst.name) {
                     errors.append("\(inst.name)：签名标识是 \(real.isEmpty ? "未知" : real)，应为 \(wantId)")
                 }
 
-                // 4. 启动并等进程真的起来
+                // 4. 启动并等进程真的起来。走 open（LaunchServices），和点 Dock 一样，
+                // 不继承本进程的环境变量：从终端带着 LANG=en_US 启动时，直接执行二进制
+                // 会让微信首次启动选成英文界面
                 report("\(tag) 启动中…", 0.7)
-                Core.run("/bin/sh", ["-c",
-                    "/usr/bin/nohup '\(inst.binPath)' >/dev/null 2>&1 &"])
+                Core.run("/usr/bin/open", ["-n", inst.appPath])
 
                 var alive = false
                 for s in 1...20 {
@@ -146,7 +148,7 @@ enum Ops {
                 }
 
                 if purge {
-                    let data = Core.containerPath(for: Core.id(for: inst.name))
+                    let data = Core.containerPath(for: inst.dataId)
                     if FileManager.default.fileExists(atPath: data) {
                         do {
                             try FileManager.default.trashItem(
@@ -255,8 +257,55 @@ extension Ops {
                     errors.append("\(inst.name)：替换失败 \(error.localizedDescription)"); continue
                 }
                 registerWithLaunchServices(inst.appPath)
+
+                // 旧规则副本：把数据容器从旧 id 改名到新 id，账号数据跟着走
+                if inst.dataId != wantId {
+                    report("迁移聊天数据…", 0.95)
+                    if let e = migrateContainer(from: inst.dataId, to: wantId) {
+                        errors.append("\(inst.name)：\(e)")
+                    }
+                }
             }
             DispatchQueue.main.async { done(errors) }
         }
+    }
+}
+
+// MARK: - 数据容器迁移
+
+extension Ops {
+    /// 把沙盒数据容器从旧 bundle id 挪到新 bundle id。
+    ///
+    /// 同一个卷里改名是原子的，几个 G 的数据也是瞬间完成，不会复制一份。
+    /// 实测改名后系统按新 id 接管这个容器，原有数据完整可用。
+    /// 新 id 的容器已存在且有数据时不覆盖，交给用户处理，免得丢数据。
+    static func migrateContainer(from oldId: String, to newId: String) -> String? {
+        let fm = FileManager.default
+        let src = Core.containerPath(for: oldId)
+        let dst = Core.containerPath(for: newId)
+        guard fm.fileExists(atPath: src) else { return nil }   // 旧容器不存在，没数据要迁
+
+        if fm.fileExists(atPath: dst) {
+            // 新容器只是空壳（比如修复前误启动过一次）就挪进废纸篓让位；有聊天数据则不动
+            let files = (dst + "/Data/Documents/xwechat_files")
+            let hasData = ((try? fm.contentsOfDirectory(atPath: files)) ?? []).contains { $0.hasPrefix("wxid_") }
+            if hasData {
+                return "数据迁移跳过：\(newId) 下已有聊天数据，旧数据仍在 \(oldId)，需要手动处理"
+            }
+            do {
+                try fm.trashItem(at: URL(fileURLWithPath: dst), resultingItemURL: nil)
+            } catch {
+                return "数据迁移失败：无法腾出 \(newId)（\(error.localizedDescription)），旧数据仍在 \(oldId)"
+            }
+        }
+
+        do {
+            try fm.moveItem(atPath: src, toPath: dst)
+        } catch {
+            return "数据迁移失败：\(error.localizedDescription)，旧数据仍在 \(oldId)"
+        }
+        // containermanagerd 用这个属性认容器归属，改名后要同步
+        Core.run("/usr/bin/xattr", ["-w", "com.apple.containermanager.identifier", newId, dst])
+        return nil
     }
 }
