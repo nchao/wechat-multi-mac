@@ -313,6 +313,31 @@ final class MainWindowController: NSWindowController {
         })
     }
 
+    // MARK: - 修复
+
+    @objc private func repairSelected() {
+        let targets = selected.filter { $0.needsRepair }
+        guard !targets.isEmpty else { return }
+        if let r = targets.first(where: { $0.running }) {
+            warn("请先退出微信", "「\(r.name)」正在运行，退出后再修复。")
+            return
+        }
+        let a = NSAlert()
+        a.messageText = "修复 \(targets.map(\.name).joined(separator: "、"))？"
+        a.informativeText = """
+            这些副本由旧版工具创建，缺少沙盒权限，部分新号登录时的安全验证可能弹不出来。
+
+            修复会从原版微信重新复制一份，保留副本的名字和自定义图标。聊天数据不受影响。旧副本会移入废纸篓。
+            """
+        a.addButton(withTitle: "修复")
+        a.addButton(withTitle: "取消")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        setBusy(true)
+        Ops.repair(targets, progress: { [weak self] p in self?.showProgress(p) },
+                   done: { [weak self] errors in self?.finish(errors) })
+    }
+
     // MARK: - 图标
 
     @objc private func changeIcon() {
@@ -406,6 +431,11 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
                 // 标识不对的副本点图标会跳回原版窗口，在列表里就标出来
                 text.stringValue = label + "  ⚠︎ 标识未生效"
                 text.textColor = .systemOrange
+            } else if item.needsRepair {
+                // 旧版签名丢了沙盒 entitlements，新号登录的安全验证可能弹不出来
+                text.stringValue = label + "  ⚠︎ 需修复"
+                text.textColor = .systemOrange
+                cell.toolTip = "这个副本由旧版工具创建，缺少沙盒权限，部分新号登录时的安全验证可能弹不出来。右键选「修复」。"
             }
 
             let stack = NSStackView(views: [icon, text])
@@ -478,6 +508,14 @@ extension MainWindowController: NSMenuDelegate {
         menu.addItem(withTitle: item.running ? "激活窗口" : "启动",
                      action: #selector(launchSelected), keyEquivalent: "").target = self
         if item.isBase { return }
+
+        let repairable = selected.filter { $0.needsRepair }
+        if !repairable.isEmpty {
+            let fix = menu.addItem(withTitle: repairable.count > 1 ? "修复 \(repairable.count) 个副本" : "修复",
+                                   action: #selector(repairSelected), keyEquivalent: "")
+            fix.target = self
+            fix.isEnabled = !repairable.contains { $0.running }
+        }
 
         menu.addItem(.separator())
         let change = menu.addItem(withTitle: "更换图标…", action: #selector(changeIcon), keyEquivalent: "")

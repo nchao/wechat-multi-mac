@@ -64,8 +64,7 @@ enum Ops {
                         continue
                     }
                     report("\(tag) 重新签名…", 0.5)
-                    let r2 = Core.run("/usr/bin/codesign",
-                                      ["--force", "--deep", "--sign", "-", inst.appPath])
+                    let r2 = Core.run("/usr/bin/codesign", Core.signArgs + [inst.appPath])
                     if !r2.ok {
                         errors.append("\(inst.name)：签名失败 \(r2.out)")
                         continue
@@ -178,5 +177,86 @@ enum Ops {
     static func refreshLaunchServices() {
         guard FileManager.default.isExecutableFile(atPath: lsregister) else { return }
         Core.run(lsregister, ["-kill", "-r", "-domain", "local", "-domain", "user"])
+    }
+}
+
+// MARK: - 修复旧副本
+
+extension Ops {
+    /// 修复旧版本工具签出来、丢了 entitlements 的副本。
+    ///
+    /// 只对已有副本重签修不好：旧签名里 entitlements 已经没了，--preserve-metadata
+    /// 无从保留。做法是从原版重新复制一份（自带完整 entitlements），换上副本的
+    /// bundle id 和自定义图标，再签名，最后原子替换。数据目录由 bundle id 决定，
+    /// 不受影响，实测替换后原有数据完整接回。
+    static func repair(
+        _ targets: [Instance],
+        progress: @escaping (Progress) -> Void,
+        done: @escaping ([String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var errors: [String] = []
+            let fm = FileManager.default
+            let total = Double(targets.count)
+
+            for (i, inst) in targets.enumerated() {
+                func report(_ t: String, _ f: Double) {
+                    DispatchQueue.main.async { progress(Progress(text: "\(inst.name) \(t)", fraction: (Double(i) + f) / total)) }
+                }
+                if inst.isBase { continue }
+                if Core.isRunning(inst.binPath) {
+                    errors.append("\(inst.name)：正在运行，请先退出")
+                    continue
+                }
+
+                let dir = (inst.appPath as NSString).deletingLastPathComponent
+                let staged = dir + "/.\(inst.name).repair.app"
+                try? fm.removeItem(atPath: staged)
+
+                report("从原版重新复制…", 0.1)
+                guard Core.run("/bin/cp", ["-Rp", Core.baseApp, staged]).ok else {
+                    errors.append("\(inst.name)：复制失败"); continue
+                }
+
+                report("设置标识…", 0.3)
+                let wantId = Core.id(for: inst.name)
+                guard Core.run("/usr/libexec/PlistBuddy",
+                               ["-c", "Set :CFBundleIdentifier \(wantId)", staged + "/Contents/Info.plist"]).ok else {
+                    try? fm.removeItem(atPath: staged)
+                    errors.append("\(inst.name)：改标识失败"); continue
+                }
+
+                // 自定义过图标的，把图标带过去
+                if inst.customIcon {
+                    let icns = "/Contents/Resources/AppIcon.icns"
+                    try? fm.removeItem(atPath: staged + icns)
+                    try? fm.copyItem(atPath: inst.appPath + icns, toPath: staged + icns)
+                    Core.run("/usr/libexec/PlistBuddy", ["-c", "Delete :CFBundleIconName", staged + "/Contents/Info.plist"])
+                }
+
+                report("重新签名…", 0.5)
+                let sign = Core.run("/usr/bin/codesign", Core.signArgs + [staged])
+                guard sign.ok, Core.isSandboxed(staged) else {
+                    try? fm.removeItem(atPath: staged)
+                    errors.append("\(inst.name)：签名失败 \(sign.out)"); continue
+                }
+
+                // 旧副本进废纸篓，新副本挪到原位。失败就把旧的捞回来
+                report("替换…", 0.85)
+                var trashed: NSURL?
+                do {
+                    try fm.trashItem(at: URL(fileURLWithPath: inst.appPath), resultingItemURL: &trashed)
+                    try fm.moveItem(atPath: staged, toPath: inst.appPath)
+                } catch {
+                    if !fm.fileExists(atPath: inst.appPath), let t = trashed as URL? {
+                        try? fm.moveItem(at: t, to: URL(fileURLWithPath: inst.appPath))
+                    }
+                    try? fm.removeItem(atPath: staged)
+                    errors.append("\(inst.name)：替换失败 \(error.localizedDescription)"); continue
+                }
+                registerWithLaunchServices(inst.appPath)
+            }
+            DispatchQueue.main.async { done(errors) }
+        }
     }
 }

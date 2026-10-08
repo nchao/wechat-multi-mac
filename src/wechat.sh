@@ -172,7 +172,9 @@ if [[ "$cur_id" == "$BASE_ID" || -z "$cur_id" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${want_id}" "${app}/Contents/Info.plist" \
     || { echo "[${name}] 改 bundle id 失败" >&2; overall=1; continue; }
   echo "[${name}] 重签名（较慢，稍等）..."
-  codesign --force --deep --sign - "$app" \
+  # --preserve-metadata=entitlements 必须带：单用 --deep 会丢掉沙盒等权限，
+  # 部分新号登录时的滑块安全验证会弹不出来
+  codesign --force --deep --sign - --preserve-metadata=entitlements "$app" \
     || { echo "[${name}] 签名失败" >&2; overall=1; continue; }
   # 刷新 LaunchServices 注册，否则 Dock/启动台可能仍按旧 id 路由到原版窗口
   LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

@@ -18,6 +18,7 @@ struct Instance {
     var dataSize: String      // 人类可读的数据目录大小，"—" 表示还没有数据
     var idMismatch: Bool      // 签名 id 与期望不符：点图标会跳回原版窗口
     var customIcon: Bool = false
+    var needsRepair: Bool = false   // 旧版工具签出来、丢了沙盒 entitlements 的副本
 
     var binPath: String { appPath + "/" + Core.binRel }
 }
@@ -62,6 +63,20 @@ enum Core {
         p.waitUntilExit()
         let out = String(data: data, encoding: .utf8) ?? ""
         return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// adhoc 重签名，保留每个组件原有的 entitlements。
+    ///
+    /// 不能只用 --deep：它会把所有 entitlements 丢掉，副本主程序和内置的 WeChatAppEx
+    /// （Chromium 内核，负责网页类窗口）都会跑在沙盒外。部分新号登录要做的滑块安全验证
+    /// 就在副本里弹不出来。--preserve-metadata=entitlements 配合 --deep 会逐个组件
+    /// 保留原 entitlements，实测 75 个可执行文件与原版完全一致。
+    static let signArgs = ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements"]
+
+    /// 副本主程序是否带沙盒 entitlement。旧版本工具签出来的副本没有
+    static func isSandboxed(_ appPath: String) -> Bool {
+        run("/usr/bin/codesign", ["-d", "--entitlements", ":-", appPath]).out
+            .contains("com.apple.security.app-sandbox")
     }
 
     static func isRunning(_ binPath: String) -> Bool {
@@ -109,7 +124,8 @@ enum Core {
                 running: isRunning(appPath + "/" + binRel),
                 dataSize: withSize ? dirSize(containerPath(for: wantId)) : "…",
                 idMismatch: !isBase && real != wantId,
-                customIcon: !isBase && hasCustomIcon(appPath)
+                customIcon: !isBase && hasCustomIcon(appPath),
+                needsRepair: !isBase && real == wantId && !isSandboxed(appPath)
             )
         }
 
