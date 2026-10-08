@@ -22,6 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.window?.makeKeyAndOrderFront(nil)
         controller = c
         NSApp.activate(ignoringOtherApps: true)
+
+        if ProcessInfo.processInfo.environment["WXMULTI_UPDATE_AUTO"] != nil {
+            Updater.autoInstallForTesting()
+            return
+        }
+        // 窗口出来后再检查，不拖慢启动
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            Updater.checkOnLaunch(window: self?.controller?.window)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -41,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "关于微信多开", action: #selector(about), keyEquivalent: "")
+            .target = self
+        appMenu.addItem(withTitle: "检查更新…", action: #selector(checkUpdate), keyEquivalent: "")
             .target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "刷新列表", action: #selector(refresh), keyEquivalent: "r")
@@ -65,9 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refresh() { controller?.reload() }
 
+    @objc private func checkUpdate() { Updater.checkManually(window: controller?.window) }
+
     @objc private func about() {
         let a = NSAlert()
-        a.messageText = "微信多开"
+        a.messageText = "微信多开 \(Updater.currentVersion)"
         a.informativeText = """
             复制 WeChat.app、修改 CFBundleIdentifier 并 adhoc 重签名，\
             让每个副本拥有独立的聊天数据目录。
