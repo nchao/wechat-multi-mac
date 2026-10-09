@@ -114,7 +114,7 @@ enum IconMaker {
     }
 
     private static func resign(_ inst: Instance) throws {
-        let r = Core.run("/usr/bin/codesign", Core.signArgs + [inst.appPath])
+        let r = Core.sign(inst.appPath)
         if !r.ok { throw err("重新签名失败：\(r.out)") }
         // 刷新图标缓存：touch 改 mtime，lsregister 重新登记，Dock 才会换图标
         Core.run("/usr/bin/touch", [inst.appPath])

@@ -78,18 +78,63 @@ enum Core {
         return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// adhoc 重签名，保留每个组件原有的 entitlements。
+    /// 指向腾讯开发者团队、adhoc 签名无权持有的两个 entitlement。重签时必须删掉
+    static let teamEntitlementKeys = [
+        "com.apple.application-identifier",
+        "com.apple.developer.team-identifier",
+    ]
+
+    /// 导出原版 entitlements 并删掉团队标识键，写成临时文件，返回其路径。失败返回 nil。
     ///
-    /// 不能只用 --deep：它会把所有 entitlements 丢掉，副本主程序和内置的 WeChatAppEx
-    /// （Chromium 内核，负责网页类窗口）都会跑在沙盒外。部分新号登录要做的滑块安全验证
-    /// 就在副本里弹不出来。--preserve-metadata=entitlements 配合 --deep 会逐个组件
-    /// 保留原 entitlements，实测 75 个可执行文件与原版完全一致。
-    static let signArgs = ["--force", "--deep", "--sign", "-", "--preserve-metadata=entitlements"]
+    /// 原版带 com.apple.application-identifier 和 com.apple.developer.team-identifier，
+    /// 都指向腾讯的 Team 5A4RE8SF68。adhoc 签名没有团队身份，却带着指向特定团队的标识，
+    /// macOS 26 起 AMFI 在启动期判定非法直接杀进程：open 报 POSIX 163 /
+    /// Launchd job spawn failed，直接执行二进制则被 SIGKILL。必须删掉这两个键。
+    ///
+    /// 但不能把 entitlements 全删：少了 com.apple.security.application-groups，微信的
+    /// crashpad 组件注册 Mach 服务会被拒（bootstrap_check_in Permission denied 1100），
+    /// 进程转为 SIGTRAP 崩溃。所以只删团队标识键，保留 app-sandbox、application-groups
+    /// 及其余所有权限。所有副本都复制自同一个 WeChat.app，entitlements 一致，从原版导出即可。
+    static func trimmedEntitlements() -> String? {
+        let dst = NSTemporaryDirectory() + "wxmulti-ent-\(UUID().uuidString).plist"
+        // --xml 保证写出干净 plist，不混 codesign 的提示行
+        let dump = run("/usr/bin/codesign", ["-d", "--entitlements", dst, "--xml", baseApp])
+        guard dump.ok, FileManager.default.fileExists(atPath: dst) else { return nil }
+        for key in teamEntitlementKeys {
+            // 键不存在时 PlistBuddy 报错无妨，忽略返回值
+            run("/usr/libexec/PlistBuddy", ["-c", "Delete :\(key)", dst])
+        }
+        return dst
+    }
+
+    /// adhoc 重签名。只签主程序 bundle，嵌套组件（WeChatHelper、WeChatAppEx 等）保持
+    /// 原版签名不动——它们没改过，资源封印仍然有效（codesign --verify --deep --strict
+    /// 通过），且 WeChatAppEx（Chromium 内核，负责滑块安全验证等网页窗口）维持原版 runtime
+    /// 签名反而更稳。adhoc 主程序不启用 Library Validation，照常加载这些原版签名的组件。
+    ///
+    /// 不再用 --deep + --preserve-metadata=entitlements：那样会把嵌套组件一起重签成 adhoc
+    /// 并原样保留团队标识，启动即被 AMFI 杀。改成用 trimmedEntitlements() 的裁剪权限签主程序。
+    static func sign(_ appPath: String) -> (ok: Bool, out: String) {
+        guard let ent = trimmedEntitlements() else {
+            return (false, "导出 entitlements 失败")
+        }
+        defer { try? FileManager.default.removeItem(atPath: ent) }
+        return run("/usr/bin/codesign",
+                   ["--force", "--sign", "-", "--entitlements", ent, appPath])
+    }
 
     /// 副本主程序是否带沙盒 entitlement。旧版本工具签出来的副本没有
     static func isSandboxed(_ appPath: String) -> Bool {
         run("/usr/bin/codesign", ["-d", "--entitlements", ":-", appPath]).out
             .contains("com.apple.security.app-sandbox")
+    }
+
+    /// 副本是否带指向腾讯团队的 entitlement。旧版工具用 --preserve-metadata 签名会原样
+    /// 保留 com.apple.developer.team-identifier，这种 adhoc + 团队标识的组合 macOS 26 起
+    /// 启动即被 AMFI 杀。带这个键的副本需要重新签名修复。
+    static func hasTeamEntitlement(_ appPath: String) -> Bool {
+        run("/usr/bin/codesign", ["-d", "--entitlements", ":-", appPath]).out
+            .contains("com.apple.developer.team-identifier")
     }
 
     static func isRunning(_ binPath: String) -> Bool {
@@ -142,7 +187,8 @@ enum Core {
                 dataSize: withSize ? dirSize(containerPath(for: wantId)) : "…",
                 idMismatch: !isBase && real != wantId,
                 customIcon: !isBase && hasCustomIcon(appPath),
-                needsRepair: !isBase && real == wantId && (onLegacy || !isSandboxed(appPath))
+                needsRepair: !isBase && real == wantId
+                    && (onLegacy || !isSandboxed(appPath) || hasTeamEntitlement(appPath))
             )
         }
 

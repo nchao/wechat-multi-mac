@@ -43,6 +43,24 @@ legacy_id_for_name() {
   if [[ "$1" =~ ^WeChat([0-9]+)$ ]]; then echo "${BASE_ID}${BASH_REMATCH[1]}"; fi
 }
 
+# 导出原版 entitlements，删掉指向腾讯团队的两个键，写到临时文件，echo 出其路径（失败返回非0）。
+#
+# 原版带 com.apple.application-identifier 和 com.apple.developer.team-identifier，
+# 都指向腾讯 Team 5A4RE8SF68。adhoc 签名没团队身份却带团队标识，macOS 26 起 AMFI 启动期
+# 判定非法直接杀进程（open 报 POSIX 163 / Launchd job spawn failed）。必须删掉这两个键。
+# 但不能全删：少了 com.apple.security.application-groups，微信 crashpad 注册 Mach 服务会被拒
+# （Permission denied 1100）转为 SIGTRAP 崩溃。所以只删团队标识键，保留 app-sandbox、
+# application-groups 等其余权限。所有副本都复制自同一个 WeChat.app，从原版导出即可。
+make_trimmed_entitlements() {
+  local out
+  out="$(mktemp -t wxmulti-ent).plist"
+  codesign -d --entitlements "$out" --xml "$BASE_APP" 2>/dev/null || return 1
+  [[ -s "$out" ]] || return 1
+  /usr/libexec/PlistBuddy -c "Delete :com.apple.application-identifier" "$out" 2>/dev/null
+  /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.team-identifier" "$out" 2>/dev/null
+  echo "$out"
+}
+
 # --list: 输出所有「微信副本」的名字（不含 .app），一行一个。
 # 判定标准是含 Contents/MacOS/WeChat 可执行文件，避免把同名的其他 app 混进来。
 if [[ "${1:-}" == "--list" ]]; then
@@ -175,20 +193,40 @@ if [[ -n "$legacy_id" && "$cur_id" == "$legacy_id" ]]; then
   echo "[${name}] 请用「微信多开.app」右键「修复」，会迁移到 ${want_id} 并保留聊天数据" >&2
   overall=1; continue
 fi
+# 旧版工具用 --preserve-metadata 签出来的副本带团队标识 entitlement，id 虽然对，但
+# adhoc + 团队标识的组合 macOS 26 起启动即被 AMFI 杀。这类副本需要用新方式重签修复。
+has_team_ent=0
+if codesign -d --entitlements :- "$app" 2>/dev/null | grep -q "com.apple.developer.team-identifier"; then
+  has_team_ent=1
+fi
+
 if [[ "$cur_id" == "$BASE_ID" || -z "$cur_id" ]]; then
   echo "[${name}] 改 bundle id: ${cur_id:-无} -> ${want_id}"
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${want_id}" "${app}/Contents/Info.plist" \
     || { echo "[${name}] 改 bundle id 失败" >&2; overall=1; continue; }
+  need_sign=1
+elif [[ $has_team_ent -eq 1 ]]; then
+  echo "[${name}] 检测到旧版签名（带团队标识，新系统上会启动即崩），重新签名修复"
+  need_sign=1
+else
+  echo "[${name}] bundle id 已是 ${cur_id}，签名正常，跳过改 id 和重签名"
+  need_sign=0
+fi
+
+if [[ $need_sign -eq 1 ]]; then
   echo "[${name}] 重签名（较慢，稍等）..."
-  # --preserve-metadata=entitlements 必须带：单用 --deep 会丢掉沙盒等权限，
-  # 部分新号登录时的滑块安全验证会弹不出来
-  codesign --force --deep --sign - --preserve-metadata=entitlements "$app" \
-    || { echo "[${name}] 签名失败" >&2; overall=1; continue; }
+  # 只签主程序 bundle，不用 --deep：嵌套组件（WeChatHelper、WeChatAppEx 等）没改过，
+  # 保持原版签名，资源封印仍有效，WeChatAppEx 维持原版 runtime 签名更稳。
+  # 用从原版导出、删掉团队标识键的 entitlements 签名，避免 AMFI 启动期杀进程。
+  ent="$(make_trimmed_entitlements)" \
+    || { echo "[${name}] 导出 entitlements 失败" >&2; overall=1; continue; }
+  codesign --force --sign - --entitlements "$ent" "$app"
+  rc=$?
+  rm -f "$ent"
+  [[ $rc -eq 0 ]] || { echo "[${name}] 签名失败" >&2; overall=1; continue; }
   # 刷新 LaunchServices 注册，否则 Dock/启动台可能仍按旧 id 路由到原版窗口
   LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   [[ -x "$LSREG" ]] && "$LSREG" -f "$app"
-else
-  echo "[${name}] bundle id 已是 ${cur_id}，跳过改 id 和重签名"
 fi
 
 # 校验：签名后的实际 id 必须与目标一致，否则点 Dock 还是会跳到原版
