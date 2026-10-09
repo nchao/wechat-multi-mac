@@ -432,10 +432,10 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
                 text.stringValue = label + "  ⚠︎ 标识未生效"
                 text.textColor = .systemOrange
             } else if item.needsRepair {
-                // 旧版签名丢了沙盒 entitlements，新号登录的安全验证可能弹不出来
+                // 旧版签名有问题：要么带团队标识导致 macOS 26 起启动即崩，要么丢了沙盒权限
                 text.stringValue = label + "  ⚠︎ 需修复"
                 text.textColor = .systemOrange
-                cell.toolTip = "这个副本由旧版工具创建，缺少沙盒权限，部分新号登录时的安全验证可能弹不出来。右键选「修复」。"
+                cell.toolTip = "这个副本由旧版工具创建，签名方式已过时：在新系统上可能直接打不开，或新号登录的安全验证弹不出来。右键选「修复」，不影响聊天数据。"
             }
 
             let stack = NSStackView(views: [icon, text])

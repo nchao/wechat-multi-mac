@@ -64,7 +64,7 @@ enum Ops {
                         continue
                     }
                     report("\(tag) 重新签名…", 0.5)
-                    let r2 = Core.run("/usr/bin/codesign", Core.signArgs + [inst.appPath])
+                    let r2 = Core.sign(inst.appPath)
                     if !r2.ok {
                         errors.append("\(inst.name)：签名失败 \(r2.out)")
                         continue
@@ -237,8 +237,8 @@ extension Ops {
                 }
 
                 report("重新签名…", 0.5)
-                let sign = Core.run("/usr/bin/codesign", Core.signArgs + [staged])
-                guard sign.ok, Core.isSandboxed(staged) else {
+                let sign = Core.sign(staged)
+                guard sign.ok, Core.isSandboxed(staged), !Core.hasTeamEntitlement(staged) else {
                     try? fm.removeItem(atPath: staged)
                     errors.append("\(inst.name)：签名失败 \(sign.out)"); continue
                 }
