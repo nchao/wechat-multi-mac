@@ -63,6 +63,10 @@ enum Ops {
                         errors.append("\(inst.name)：改标识失败 \(r1.out)")
                         continue
                     }
+                    guard Core.disableAutoUpdate(inst.appPath) else {
+                        errors.append("\(inst.name)：关闭自动更新失败")
+                        continue
+                    }
                     report("\(tag) 重新签名…", 0.5)
                     let r2 = Core.sign(inst.appPath)
                     if !r2.ok {
@@ -82,6 +86,7 @@ enum Ops {
                 // 4. 启动并等进程真的起来。走 open（LaunchServices），和点 Dock 一样，
                 // 不继承本进程的环境变量：从终端带着 LANG=en_US 启动时，直接执行二进制
                 // 会让微信首次启动选成英文界面
+                Core.disableAutoUpdatePrefs(wantId)
                 report("\(tag) 启动中…", 0.7)
                 Core.run("/usr/bin/open", ["-n", inst.appPath])
 
@@ -236,6 +241,11 @@ extension Ops {
                     Core.run("/usr/libexec/PlistBuddy", ["-c", "Delete :CFBundleIconName", staged + "/Contents/Info.plist"])
                 }
 
+                guard Core.disableAutoUpdate(staged) else {
+                    try? fm.removeItem(atPath: staged)
+                    errors.append("\(inst.name)：关闭自动更新失败"); continue
+                }
+
                 report("重新签名…", 0.5)
                 let sign = Core.sign(staged)
                 guard sign.ok, Core.isSandboxed(staged), !Core.hasTeamEntitlement(staged) else {
@@ -265,6 +275,7 @@ extension Ops {
                         errors.append("\(inst.name)：\(e)")
                     }
                 }
+                Core.disableAutoUpdatePrefs(wantId)
             }
             DispatchQueue.main.async { done(errors) }
         }

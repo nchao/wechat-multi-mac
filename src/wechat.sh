@@ -61,6 +61,34 @@ make_trimmed_entitlements() {
   echo "$out"
 }
 
+# 副本关掉微信内置的 Sparkle 自动更新（写 Info.plist，之后必须重签名）。
+# 副本改了 bundle id，Sparkle 的 XPC 服务名变成 <副本 id>-spks，沙盒白名单却只放行原版的
+# com.tencent.xinWeChat-spks，安装器连不上、超时退出又被拉起，无限循环拖慢整机。
+# 就算装上也是官方原包，会把副本还原成原版 id。所以副本不自己更新，原版升级后重建同步。
+disable_auto_update() {
+  local plist="$1/Contents/Info.plist"
+  plutil -replace SUEnableAutomaticChecks -bool NO "$plist" \
+    && plutil -replace SUAllowsAutomaticUpdates -bool NO "$plist"
+}
+
+auto_update_disabled() {
+  local plist="$1/Contents/Info.plist" k
+  for k in SUEnableAutomaticChecks SUAllowsAutomaticUpdates; do
+    [[ "$(/usr/libexec/PlistBuddy -c "Print :$k" "$plist" 2>/dev/null)" == "false" ]] || return 1
+  done
+}
+
+# 用户偏好里存过的 SUEnableAutomaticChecks=YES 会盖过 Info.plist，一并改掉；
+# 顺手清掉装不上的更新包和 Launcher 残留。容器还没建（副本没启动过）就不写偏好
+disable_auto_update_prefs() {
+  local id="$1" lib="$HOME/Library/Containers/$1/Data/Library"
+  rm -rf "$HOME/Library/Caches/${id}/org.sparkle-project.Sparkle"
+  [[ -d "$lib" ]] || return 0
+  defaults write "$lib/Preferences/$id" SUEnableAutomaticChecks -bool NO
+  defaults write "$lib/Preferences/$id" SUAutomaticallyUpdate -bool NO
+  rm -rf "$lib/Caches/${id}/org.sparkle-project.Sparkle"
+}
+
 # --list: 输出所有「微信副本」的名字（不含 .app），一行一个。
 # 判定标准是含 Contents/MacOS/WeChat 可执行文件，避免把同名的其他 app 混进来。
 if [[ "${1:-}" == "--list" ]]; then
@@ -208,12 +236,17 @@ if [[ "$cur_id" == "$BASE_ID" || -z "$cur_id" ]]; then
 elif [[ $has_team_ent -eq 1 ]]; then
   echo "[${name}] 检测到旧版签名（带团队标识，新系统上会启动即崩），重新签名修复"
   need_sign=1
+elif ! auto_update_disabled "$app"; then
+  echo "[${name}] 副本没关微信自带的自动更新（装不上会反复重试拖慢整机），关闭后重新签名"
+  need_sign=1
 else
   echo "[${name}] bundle id 已是 ${cur_id}，签名正常，跳过改 id 和重签名"
   need_sign=0
 fi
 
 if [[ $need_sign -eq 1 ]]; then
+  disable_auto_update "$app" \
+    || { echo "[${name}] 关闭自动更新失败" >&2; overall=1; continue; }
   echo "[${name}] 重签名（较慢，稍等）..."
   # 只签主程序 bundle，不用 --deep：嵌套组件（WeChatHelper、WeChatAppEx 等）没改过，
   # 保持原版签名，资源封印仍有效，WeChatAppEx 维持原版 runtime 签名更稳。
@@ -236,6 +269,8 @@ if [[ "$real_id" != "$want_id" ]]; then
   echo "[${name}] 这种状态下点 Dock 图标会激活原版窗口，需要排查" >&2
   overall=1
 fi
+
+disable_auto_update_prefs "$want_id"
 
 echo "[${name}] 启动: ${app}"
 # 用 open 走 LaunchServices，不继承终端的 LANG：终端里 LANG=en_US 时，

@@ -9,7 +9,11 @@ final class MainWindowController: NSWindowController {
     private let scroll = NSScrollView()
     private let addRemove = NSSegmentedControl()
     private let launchButton = NSButton()
+    private let quitAfterLaunch = NSButton(checkboxWithTitle: "启动后关闭本工具", target: nil, action: nil)
     private let iconButton = NSButton()
+
+    /// 勾选状态记在偏好里，默认勾上
+    private static let quitAfterLaunchKey = "quitAfterLaunch"
     private var iconEditor: IconEditor?
     private let statusLabel = NSTextField(labelWithString: "")
     private let bar = NSProgressIndicator()
@@ -119,6 +123,14 @@ final class MainWindowController: NSWindowController {
         launchButton.action = #selector(launchSelected)
         launchButton.translatesAutoresizingMaskIntoConstraints = false
 
+        UserDefaults.standard.register(defaults: [Self.quitAfterLaunchKey: true])
+        quitAfterLaunch.controlSize = .small
+        quitAfterLaunch.font = .systemFont(ofSize: 11)
+        quitAfterLaunch.state = UserDefaults.standard.bool(forKey: Self.quitAfterLaunchKey) ? .on : .off
+        quitAfterLaunch.target = self
+        quitAfterLaunch.action = #selector(quitAfterLaunchToggled)
+        quitAfterLaunch.toolTip = "启动的副本都起来后自动退出「微信多开」。出错时不退出，方便查看原因。"
+
         iconButton.title = "更换图标…"
         iconButton.bezelStyle = .rounded
         iconButton.controlSize = .small
@@ -140,7 +152,7 @@ final class MainWindowController: NSWindowController {
         header.alignment = .leading
         header.spacing = 2
 
-        let footer = NSStackView(views: [addRemove, iconButton, NSView(), statusLabel, launchButton])
+        let footer = NSStackView(views: [addRemove, iconButton, NSView(), statusLabel, quitAfterLaunch, launchButton])
         footer.orientation = .horizontal
         footer.spacing = 8
 
@@ -238,8 +250,17 @@ final class MainWindowController: NSWindowController {
         Ops.launch(targets, progress: { [weak self] p in
             self?.showProgress(p)
         }, done: { [weak self] errors in
-            self?.finish(errors)
+            guard let self else { return }
+            self.finish(errors)
+            // 出错时留着窗口，让用户看到提示；全部成功才退出
+            if errors.isEmpty && self.quitAfterLaunch.state == .on {
+                NSApp.terminate(nil)
+            }
         })
+    }
+
+    @objc private func quitAfterLaunchToggled() {
+        UserDefaults.standard.set(quitAfterLaunch.state == .on, forKey: Self.quitAfterLaunchKey)
     }
 
     private func createNew() {
@@ -316,20 +337,24 @@ final class MainWindowController: NSWindowController {
     // MARK: - 修复
 
     @objc private func repairSelected() {
-        let targets = selected.filter { $0.needsRepair }
+        let targets = selected.filter { $0.needsRepair || $0.outdated }
         guard !targets.isEmpty else { return }
+        let verb = targets.allSatisfy { !$0.needsRepair } ? "同步新版" : "修复"
         if let r = targets.first(where: { $0.running }) {
-            warn("请先退出微信", "「\(r.name)」正在运行，退出后再修复。")
+            warn("请先退出微信", "「\(r.name)」正在运行，退出后再\(verb)。")
             return
         }
         let a = NSAlert()
-        a.messageText = "修复 \(targets.map(\.name).joined(separator: "、"))？"
+        a.messageText = "\(verb) \(targets.map(\.name).joined(separator: "、"))？"
+        let reason = verb == "同步新版"
+            ? "原版微信已升级，这些副本还是旧版本。副本已关闭微信自带的自动更新，需要在这里同步。"
+            : "这些副本由旧版工具创建，可能缺少沙盒权限，或没有关闭微信自带的自动更新（装不上，会反复重试拖慢电脑）。"
         a.informativeText = """
-            这些副本由旧版工具创建，缺少沙盒权限，部分新号登录时的安全验证可能弹不出来。
+            \(reason)
 
-            修复会从原版微信重新复制一份，保留副本的名字和自定义图标。聊天数据不受影响。旧副本会移入废纸篓。
+            会从原版微信重新复制一份，保留副本的名字和自定义图标。聊天数据不受影响。旧副本会移入废纸篓。
             """
-        a.addButton(withTitle: "修复")
+        a.addButton(withTitle: verb)
         a.addButton(withTitle: "取消")
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
@@ -379,6 +404,7 @@ final class MainWindowController: NSWindowController {
         bar.isHidden = !busy
         bar.doubleValue = 0
         launchButton.isEnabled = !busy
+        quitAfterLaunch.isEnabled = !busy
         addRemove.isEnabled = !busy
         iconButton.isEnabled = !busy
         table.isEnabled = !busy
@@ -432,10 +458,16 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
                 text.stringValue = label + "  ⚠︎ 标识未生效"
                 text.textColor = .systemOrange
             } else if item.needsRepair {
-                // 旧版签名有问题：要么带团队标识导致 macOS 26 起启动即崩，要么丢了沙盒权限
+                // 旧版签名有问题：要么带团队标识导致 macOS 26 起启动即崩，要么丢了沙盒权限，
+                // 要么没关微信自带的自动更新（副本装不上更新，会反复重试拖慢整机）
                 text.stringValue = label + "  ⚠︎ 需修复"
                 text.textColor = .systemOrange
-                cell.toolTip = "这个副本由旧版工具创建，签名方式已过时：在新系统上可能直接打不开，或新号登录的安全验证弹不出来。右键选「修复」，不影响聊天数据。"
+                cell.toolTip = "这个副本由旧版工具创建：在新系统上可能直接打不开、新号登录的安全验证弹不出来，或微信自带的自动更新会反复失败拖慢电脑。右键选「修复」，不影响聊天数据。"
+            } else if item.outdated {
+                // 副本不自己更新，原版升级后由这里同步
+                text.stringValue = label + "  ↑ 可同步新版"
+                text.textColor = .systemBlue
+                cell.toolTip = "原版微信已升级，这个副本还是旧版本。退出副本后右键选「同步新版」，聊天数据和自定义图标都会保留。"
             }
 
             let stack = NSStackView(views: [icon, text])
@@ -509,9 +541,11 @@ extension MainWindowController: NSMenuDelegate {
                      action: #selector(launchSelected), keyEquivalent: "").target = self
         if item.isBase { return }
 
-        let repairable = selected.filter { $0.needsRepair }
+        let repairable = selected.filter { $0.needsRepair || $0.outdated }
         if !repairable.isEmpty {
-            let fix = menu.addItem(withTitle: repairable.count > 1 ? "修复 \(repairable.count) 个副本" : "修复",
+            // 修复和同步新版是同一套流程：从原版重新复制，换上副本的 id 和图标
+            let verb = repairable.allSatisfy { !$0.needsRepair } ? "同步新版" : "修复"
+            let fix = menu.addItem(withTitle: repairable.count > 1 ? "\(verb) \(repairable.count) 个副本" : verb,
                                    action: #selector(repairSelected), keyEquivalent: "")
             fix.target = self
             fix.isEnabled = !repairable.contains { $0.running }

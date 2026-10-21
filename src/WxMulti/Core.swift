@@ -18,7 +18,8 @@ struct Instance {
     var dataSize: String      // 人类可读的数据目录大小，"—" 表示还没有数据
     var idMismatch: Bool      // 签名 id 与期望不符：点图标会跳回原版窗口
     var customIcon: Bool = false
-    var needsRepair: Bool = false   // 旧版工具签出来的副本：丢了沙盒 entitlements，或用的是不带点的旧 id
+    var needsRepair: Bool = false   // 旧版工具签出来的副本：丢了沙盒 entitlements、用的是不带点的旧 id，或没关自动更新
+    var outdated: Bool = false      // 原版微信已升级，副本还是旧版本
 
     /// 数据实际所在容器的 id。旧规则副本迁移前还在旧 id 下
     var dataId: String {
@@ -137,6 +138,49 @@ enum Core {
             .contains("com.apple.developer.team-identifier")
     }
 
+    /// 写进副本 Info.plist、关掉微信内置 Sparkle 自动更新的两个键。
+    ///
+    /// 副本改了 bundle id，Sparkle 的 XPC 服务名跟着变成 <副本 id>-spks，但沙盒
+    /// entitlements 的 mach-lookup 白名单写死的是原版的 com.tencent.xinWeChat-spks。
+    /// 主进程连不上安装器（Sandbox deny mach-lookup），Autoupdate 等安装数据超时退出后
+    /// 又被拉起，每轮在 ~/Library/Caches/<id>/org.sparkle-project.Sparkle/Launcher 下
+    /// 解压一份新 Updater.app，lsd / tccd / trustd 跟着反复登记、验签，整机周期性卡顿。
+    /// 就算打通，装上的也是官方原包，id 和签名被还原，副本就废了。所以副本一律不自己
+    /// 更新，原版升级后由本工具同步。SUAllowsAutomaticUpdates=NO 关掉后台静默下载安装，
+    /// SUEnableAutomaticChecks=NO 关掉定时检查。
+    static let noUpdateKeys = ["SUEnableAutomaticChecks", "SUAllowsAutomaticUpdates"]
+
+    /// 往副本 Info.plist 写入关闭自动更新的键。改了 Info.plist 必须随后重签名
+    static func disableAutoUpdate(_ appPath: String) -> Bool {
+        let plist = appPath + "/Contents/Info.plist"
+        return noUpdateKeys.allSatisfy {
+            run("/usr/bin/plutil", ["-replace", $0, "-bool", "NO", plist]).ok
+        }
+    }
+
+    static func autoUpdateDisabled(_ appPath: String) -> Bool {
+        let plist = NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")
+        return noUpdateKeys.allSatisfy { (plist?[$0] as? Bool) == false }
+    }
+
+    /// 用户偏好里 Sparkle 存过 SUEnableAutomaticChecks = YES 的话会盖过 Info.plist，
+    /// 一并改成 NO；顺手清掉之前下载好、反正装不上的更新包和 Launcher 残留。
+    /// 数据容器不存在（新副本还没启动过）就不写偏好：提前建目录会干扰系统初始化容器。
+    static func disableAutoUpdatePrefs(_ bundleId: String) {
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: NSHomeDirectory() + "/Library/Caches/" + bundleId + "/org.sparkle-project.Sparkle")
+        let lib = containerPath(for: bundleId) + "/Data/Library"
+        guard fm.fileExists(atPath: lib) else { return }
+        let prefs = lib + "/Preferences/" + bundleId
+        run("/usr/bin/defaults", ["write", prefs, "SUEnableAutomaticChecks", "-bool", "NO"])
+        run("/usr/bin/defaults", ["write", prefs, "SUAutomaticallyUpdate", "-bool", "NO"])
+        try? fm.removeItem(atPath: lib + "/Caches/" + bundleId + "/org.sparkle-project.Sparkle")
+    }
+
+    static func bundleVersion(_ appPath: String) -> String {
+        NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")?["CFBundleVersion"] as? String ?? ""
+    }
+
     static func isRunning(_ binPath: String) -> Bool {
         run("/usr/bin/pgrep", ["-f", "^" + binPath + "$"]).ok
     }
@@ -167,6 +211,7 @@ enum Core {
     static func scan(withSize: Bool = true) -> [Instance] {
         var result: [Instance] = []
         let fm = FileManager.default
+        let baseVersion = bundleVersion(baseApp)
 
         func make(_ appPath: String, isBase: Bool) -> Instance? {
             let name = (appPath as NSString).lastPathComponent
@@ -188,7 +233,9 @@ enum Core {
                 idMismatch: !isBase && real != wantId,
                 customIcon: !isBase && hasCustomIcon(appPath),
                 needsRepair: !isBase && real == wantId
-                    && (onLegacy || !isSandboxed(appPath) || hasTeamEntitlement(appPath))
+                    && (onLegacy || !isSandboxed(appPath) || hasTeamEntitlement(appPath)
+                        || !autoUpdateDisabled(appPath)),
+                outdated: !isBase && real == wantId && bundleVersion(appPath) != baseVersion
             )
         }
 
