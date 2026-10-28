@@ -177,6 +177,10 @@ python3 icon/wxmulti-icon.py       # 生成 icon_1024.png
 
 核心方法来自 [engrecho/Mac_dual_wechat](https://github.com/engrecho/Mac_dual_wechat)。
 
+## 反馈与建议
+
+欢迎提交 [Issues](https://github.com/nchao/wechat-multi-mac/issues)，反馈问题或提出建议。
+
 ## License
 
 MIT
