@@ -20,11 +20,11 @@ final class MainWindowController: NSWindowController {
 
     convenience init() {
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 610, height: 340),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         w.title = "微信多开"
-        w.minSize = NSSize(width: 460, height: 300)
+        w.minSize = NSSize(width: 540, height: 300)
         w.center()
         self.init(window: w)
         buildUI()
@@ -49,7 +49,7 @@ final class MainWindowController: NSWindowController {
     @objc private func appStateChanged(_ note: Notification) {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let exe = app.executableURL?.path,
-              let i = rows.firstIndex(where: { $0.binPath == exe }) else { return }
+              let i = rows.firstIndex(where: { !$0.orphan && $0.binPath == exe }) else { return }
         // 只改这一行的运行状态，不做全量 scan（scan 要跑 du，几个 G 的目录会卡）
         rows[i].running = (note.name == NSWorkspace.didLaunchApplicationNotification)
         table.reloadData(forRowIndexes: [i], columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
@@ -82,8 +82,8 @@ final class MainWindowController: NSWindowController {
 
         let colName = NSTableColumn(identifier: .init("name"))
         colName.title = "名称"
-        colName.width = 270
-        colName.minWidth = 160
+        colName.width = 210
+        colName.minWidth = 140
         table.addTableColumn(colName)
 
         let colState = NSTableColumn(identifier: .init("state"))
@@ -91,6 +91,12 @@ final class MainWindowController: NSWindowController {
         colState.width = 80
         colState.minWidth = 70
         table.addTableColumn(colState)
+
+        let colVersion = NSTableColumn(identifier: .init("version"))
+        colVersion.title = "微信版本"
+        colVersion.width = 66
+        colVersion.minWidth = 56
+        table.addTableColumn(colVersion)
 
         let colSize = NSTableColumn(identifier: .init("size"))
         colSize.title = "聊天数据"
@@ -189,10 +195,10 @@ final class MainWindowController: NSWindowController {
             let fresh = Core.scan(withSize: false)
             DispatchQueue.main.async { [weak self] in
                 guard let self, gen == self.reloadGen else { return }
-                let keep = Set(self.selected.map(\.name))
+                let keep = Set(self.selected.map(\.key))
                 self.rows = fresh
                 self.table.reloadData()
-                let restore = IndexSet(self.rows.indices.filter { keep.contains(self.rows[$0].name) })
+                let restore = IndexSet(self.rows.indices.filter { keep.contains(self.rows[$0].key) })
                 if !restore.isEmpty { self.table.selectRowIndexes(restore, byExtendingSelection: false) }
                 self.updateButtons()
                 self.fillSizes(gen)
@@ -201,13 +207,13 @@ final class MainWindowController: NSWindowController {
     }
 
     private func fillSizes(_ gen: Int) {
-        let targets = rows.map { ($0.name, Core.containerPath(for: $0.dataId)) }
+        let targets = rows.map { ($0.key, Core.containerPath(for: $0.dataId)) }
         DispatchQueue.global(qos: .utility).async {
-            for (name, path) in targets {
+            for (key, path) in targets {
                 let size = Core.dirSize(path)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, gen == self.reloadGen,
-                          let i = self.rows.firstIndex(where: { $0.name == name }) else { return }
+                          let i = self.rows.firstIndex(where: { $0.key == key }) else { return }
                     self.rows[i].dataSize = size
                     let col = self.table.column(withIdentifier: .init("size"))
                     if col >= 0 { self.table.reloadData(forRowIndexes: [i], columnIndexes: [col]) }
@@ -218,8 +224,9 @@ final class MainWindowController: NSWindowController {
 
     private func updateButtons() {
         let sel = table.selectedRowIndexes
-        launchButton.isEnabled = !sel.isEmpty
-        // 只有选中非原版的行才能卸载
+        // 残留数据没有 app，不能启动；要用得先右键「重建副本」
+        launchButton.isEnabled = selected.contains { !$0.orphan }
+        // 只有选中非原版的行才能卸载（选中残留数据时「－」是删除数据）
         let removable = sel.contains { rows.indices.contains($0) && !rows[$0].isBase }
         addRemove.setEnabled(removable, forSegment: 1)
         // 换图标只针对单个副本：原版不动，运行中改签名可能让进程异常
@@ -229,7 +236,7 @@ final class MainWindowController: NSWindowController {
     /// 可换图标的目标：恰好选中一个、非原版、未运行的副本
     private var iconTarget: Instance? {
         let s = selected
-        guard s.count == 1, let i = s.first, !i.isBase, !i.running else { return nil }
+        guard s.count == 1, let i = s.first, !i.isBase, !i.orphan, !i.running else { return nil }
         return i
     }
 
@@ -244,7 +251,7 @@ final class MainWindowController: NSWindowController {
     }
 
     @objc private func launchSelected() {
-        let targets = selected
+        let targets = selected.filter { !$0.orphan }
         guard !targets.isEmpty else { return }
         setBusy(true)
         Ops.launch(targets, progress: { [weak self] p in
@@ -305,8 +312,12 @@ final class MainWindowController: NSWindowController {
     }
 
     private func uninstallSelected() {
-        let targets = selected.filter { !$0.isBase }
-        guard !targets.isEmpty else { return }
+        let targets = selected.filter { !$0.isBase && !$0.orphan }
+        guard !targets.isEmpty else {
+            // 只选了残留数据：「－」就是删除数据
+            deleteOrphanData()
+            return
+        }
 
         if let running = targets.first(where: { $0.running }) {
             warn("请先退出微信", "「\(running.name)」正在运行，退出后再卸载。")
@@ -332,6 +343,100 @@ final class MainWindowController: NSWindowController {
         }, done: { [weak self] errors in
             self?.finish(errors)
         })
+    }
+
+    // MARK: - 残留数据
+
+    @objc private func deleteOrphanData() {
+        let targets = selected.filter(\.orphan)
+        guard !targets.isEmpty else { return }
+        let a = NSAlert()
+        a.messageText = "删除 \(targets.map(\.name).joined(separator: "、")) 的聊天数据？"
+        a.informativeText = "这些数据的副本已经卸载。数据目录会移入废纸篓，清空废纸篓前都可以恢复。"
+        a.addButton(withTitle: "移入废纸篓")
+        a.addButton(withTitle: "取消")
+        a.buttons[0].hasDestructiveAction = true
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        setBusy(true)
+        Ops.trashOrphans(targets, progress: { [weak self] p in self?.showProgress(p) },
+                         done: { [weak self] errors in self?.finish(errors) })
+    }
+
+    /// 用同一个名字新建副本，副本的 bundle id 和残留容器一致，原来的账号和聊天记录直接接上
+    @objc private func rebuildOrphan() {
+        let targets = selected.filter(\.rebuildable)
+        guard !targets.isEmpty else { return }
+        if let t = targets.first(where: { FileManager.default.fileExists(atPath: $0.appPath) }) {
+            warn("无法重建", "/Applications 里已经有 \(t.name).app，先改名或移走它。")
+            return
+        }
+        setBusy(true)
+        Ops.create(names: targets.map(\.name), progress: { [weak self] p in self?.showProgress(p) },
+                   done: { [weak self] errors in self?.finish(errors) })
+    }
+
+    // MARK: - 清理缓存
+
+    @objc private func cleanCacheSelected() {
+        let targets = selected.filter { !$0.orphan }
+        guard !targets.isEmpty else { return }
+        if let r = targets.first(where: { $0.running }) {
+            warn("请先退出微信", "「\(r.name)」正在运行，退出后再清理缓存。")
+            return
+        }
+        // 统计大小要跑 du，几百 MB 的目录要一两秒，放后台
+        setBusy(true)
+        statusLabel.stringValue = "正在统计缓存…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let kinds = Ops.cacheKinds(for: targets)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.setBusy(false)
+                self.confirmClean(kinds, targets)
+            }
+        }
+    }
+
+    private func confirmClean(_ kinds: [Ops.CacheKind], _ targets: [Instance]) {
+        let fmt = ByteCountFormatter()
+        fmt.countStyle = .file
+        let a = NSAlert()
+        a.messageText = "清理 \(targets.map(\.name).joined(separator: "、")) 的缓存"
+        a.informativeText = "清掉的内容会移入废纸篓，清空废纸篓后才真正腾出空间。聊天记录和聊天里的图片、视频、文件不受影响，那些可以在微信「设置 → 存储空间」里管理。"
+        a.addButton(withTitle: "移入废纸篓")
+        a.addButton(withTitle: "取消")
+
+        let boxes = kinds.map { k -> NSButton in
+            let b = NSButton(checkboxWithTitle: "\(k.title)  \(fmt.string(fromByteCount: k.bytes))",
+                             target: nil, action: nil)
+            b.state = k.defaultOn && k.bytes > 0 ? .on : .off
+            b.isEnabled = k.bytes > 0
+            b.toolTip = k.detail
+            return b
+        }
+        let rows = zip(kinds, boxes).map { k, b -> NSView in
+            let hint = NSTextField(labelWithString: k.detail)
+            hint.font = .systemFont(ofSize: 11)
+            hint.textColor = .secondaryLabelColor
+            let v = NSStackView(views: [b, hint])
+            v.orientation = .vertical
+            v.alignment = .leading
+            v.spacing = 1
+            return v
+        }
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.frame = NSRect(x: 0, y: 0, width: 300, height: CGFloat(kinds.count) * 40)
+        a.accessoryView = stack
+
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let chosen = zip(kinds, boxes).filter { $1.state == .on }.map(\.0)
+        guard !chosen.isEmpty else { return }
+        setBusy(true)
+        Ops.cleanCaches(chosen, of: targets, progress: { [weak self] p in self?.showProgress(p) },
+                        done: { [weak self] errors in self?.finish(errors) })
     }
 
     // MARK: - 修复
@@ -453,7 +558,18 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
             if item.isBase { label += "（原版）" }
             let text = NSTextField(labelWithString: label)
             text.font = .systemFont(ofSize: 13)
-            if item.idMismatch {
+            text.lineBreakMode = .byTruncatingTail
+            if item.orphan {
+                // 副本已卸载、数据还在。app 不存在，用通用的微信图标
+                icon.image = Core.icon(for: Core.baseApp)
+                icon.alphaValue = 0.4
+                // 旧标识残留可能和现有副本同名（如 WeChat2），文案上区分开
+                text.stringValue = label + (item.rebuildable ? "（仅剩数据）" : "（旧标识残留数据）")
+                text.textColor = .tertiaryLabelColor
+                cell.toolTip = item.rebuildable
+                    ? "副本已卸载，聊天数据还在 ~/Library/Containers/\(item.bundleId)。右键「重建副本」可直接接上原来的账号和聊天记录，或「删除数据」移入废纸篓。"
+                    : "旧版工具留下的数据目录 \(item.bundleId)，副本已迁到新标识或已卸载，这份数据不会再被使用。右键「删除数据」移入废纸篓。"
+            } else if item.idMismatch {
                 // 标识不对的副本点图标会跳回原版窗口，在列表里就标出来
                 text.stringValue = label + "  ⚠︎ 标识未生效"
                 text.textColor = .systemOrange
@@ -485,10 +601,20 @@ extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
             return cell
 
         case "state":
-            let text = NSTextField(labelWithString: item.running ? "● 运行中" : "○ 已停止")
+            let text = NSTextField(labelWithString: item.orphan ? "已卸载" : (item.running ? "● 运行中" : "○ 已停止"))
             text.font = .systemFont(ofSize: 12)
-            text.textColor = item.running ? .systemGreen : .secondaryLabelColor
+            text.textColor = item.orphan ? .tertiaryLabelColor : (item.running ? .systemGreen : .secondaryLabelColor)
             return wrap(text, in: .left)
+
+        case "version":
+            let text = NSTextField(labelWithString: item.version.isEmpty ? "—" : item.version)
+            text.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            // 落后于原版的副本用蓝色，和名称列的「可同步新版」呼应
+            text.textColor = item.outdated ? .systemBlue : .secondaryLabelColor
+            text.lineBreakMode = .byTruncatingTail
+            let cell = wrap(text, in: .left)
+            if !item.build.isEmpty { cell.toolTip = "Build \(item.build)" }
+            return cell
 
         case "size":
             let text = NSTextField(labelWithString: item.dataSize)
@@ -537,8 +663,29 @@ extension MainWindowController: NSMenuDelegate {
         }
         let item = rows[r]
 
+        if item.orphan {
+            let orphans = selected.filter(\.orphan)
+            let rebuildable = orphans.filter(\.rebuildable)
+            if !rebuildable.isEmpty {
+                menu.addItem(withTitle: rebuildable.count > 1 ? "重建 \(rebuildable.count) 个副本" : "重建副本",
+                             action: #selector(rebuildOrphan), keyEquivalent: "").target = self
+            }
+            menu.addItem(withTitle: orphans.count > 1 ? "删除 \(orphans.count) 份数据…" : "删除数据…",
+                         action: #selector(deleteOrphanData), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "在访达中显示数据", action: #selector(revealInFinder), keyEquivalent: "").target = self
+            return
+        }
+
         menu.addItem(withTitle: item.running ? "激活窗口" : "启动",
                      action: #selector(launchSelected), keyEquivalent: "").target = self
+
+        // 原版也能清：只动缓存，不改 app 本身
+        let live = selected.filter { !$0.orphan }
+        let clean = menu.addItem(withTitle: live.count > 1 ? "清理 \(live.count) 个的缓存…" : "清理缓存…",
+                                 action: #selector(cleanCacheSelected), keyEquivalent: "")
+        clean.target = self
+        clean.isEnabled = !live.contains { $0.running }
         if item.isBase { return }
 
         let repairable = selected.filter { $0.needsRepair || $0.outdated }
@@ -565,7 +712,9 @@ extension MainWindowController: NSMenuDelegate {
     }
 
     @objc private func revealInFinder() {
-        let urls = selected.map { URL(fileURLWithPath: $0.appPath) }
+        let urls = selected.map {
+            URL(fileURLWithPath: $0.orphan ? Core.containerPath(for: $0.bundleId) : $0.appPath)
+        }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 }

@@ -20,15 +20,27 @@ struct Instance {
     var customIcon: Bool = false
     var needsRepair: Bool = false   // 旧版工具签出来的副本：丢了沙盒 entitlements、用的是不带点的旧 id，或没关自动更新
     var outdated: Bool = false      // 原版微信已升级，副本还是旧版本
+    var version: String = ""        // 列表里显示的微信版本，如 4.2.0
+    var build: String = ""          // CFBundleVersion，如 270390
+    var orphan: Bool = false        // 残留数据：容器还在，对应的副本 app 已经没了
+
+    /// 残留数据能否一键重建：新规则 id 的容器，用同名副本就能接上。
+    /// 旧规则 xinWeChatN 的容器重建出来是新 id，接不上，只能删
+    var rebuildable: Bool { orphan && bundleId == Core.id(for: name) && name != "WeChat" }
 
     /// 数据实际所在容器的 id。旧规则副本迁移前还在旧 id 下
     var dataId: String {
         if isBase { return Core.baseId }
+        if orphan { return bundleId }
         if let l = Core.legacyId(for: name), bundleId == l { return l }
         return Core.id(for: name)
     }
 
     var binPath: String { appPath + "/" + Core.binRel }
+
+    /// 列表里区分行的键。残留数据可能和现有副本同名（如旧 id xinWeChat2 和 WeChat2.app），
+    /// 不能只用名字
+    var key: String { orphan ? "orphan:" + bundleId : appPath }
 }
 
 // MARK: - 核心逻辑
@@ -181,6 +193,11 @@ enum Core {
         NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")?["CFBundleVersion"] as? String ?? ""
     }
 
+    /// 用户看到的版本号（CFBundleShortVersionString），如 4.2.0
+    static func shortVersion(_ appPath: String) -> String {
+        NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
     static func isRunning(_ binPath: String) -> Bool {
         run("/usr/bin/pgrep", ["-f", "^" + binPath + "$"]).ok
     }
@@ -212,6 +229,7 @@ enum Core {
         var result: [Instance] = []
         let fm = FileManager.default
         let baseVersion = bundleVersion(baseApp)
+        let baseShort = shortVersion(baseApp)
 
         func make(_ appPath: String, isBase: Bool) -> Instance? {
             let name = (appPath as NSString).lastPathComponent
@@ -223,6 +241,11 @@ enum Core {
             let legacy = isBase ? nil : legacyId(for: name)
             let onLegacy = legacy != nil && real == legacy
             let wantId = isBase ? baseId : (onLegacy ? legacy! : id(for: name))
+            let build = bundleVersion(appPath)
+            let outdated = !isBase && real == wantId && build != baseVersion
+            var version = shortVersion(appPath)
+            // 原版小版本升级时 4.2.0 可能不变、只有 build 变，这时带上 build 才看得出差别
+            if outdated && version == baseShort { version += " (\(build))" }
             return Instance(
                 name: name,
                 appPath: appPath,
@@ -235,7 +258,9 @@ enum Core {
                 needsRepair: !isBase && real == wantId
                     && (onLegacy || !isSandboxed(appPath) || hasTeamEntitlement(appPath)
                         || !autoUpdateDisabled(appPath)),
-                outdated: !isBase && real == wantId && bundleVersion(appPath) != baseVersion
+                outdated: outdated,
+                version: version,
+                build: build
             )
         }
 
@@ -249,7 +274,40 @@ enum Core {
             if let inst = make(path, isBase: false) { copies.append(inst) }
         }
         result.append(contentsOf: copies)
+        result.append(contentsOf: orphans(excluding: result, withSize: withSize))
         return result
+    }
+
+    /// 找出没有对应 app 的副本数据容器，排在列表最后。
+    ///
+    /// 只认 com.tencent.xinWeChat.<名字> 和旧规则 com.tencent.xinWeChatN，且容器里要有
+    /// Documents/xwechat_files（微信主程序的数据）。这样能排除微信自带的扩展容器，
+    /// 比如 .MiniProgram、.WeChatFileProviderExtension、.WeChatMacShare。
+    static func orphans(excluding used: [Instance], withSize: Bool) -> [Instance] {
+        let fm = FileManager.default
+        let root = NSHomeDirectory() + "/Library/Containers"
+        // 已有 app 的数据 id 和 Info.plist 里的 id 都算在用，避免误标
+        let taken = Set(used.flatMap { [$0.dataId, $0.bundleId] })
+        var found: [Instance] = []
+        for cid in ((try? fm.contentsOfDirectory(atPath: root)) ?? []).sorted() {
+            guard cid.hasPrefix(baseId), cid != baseId, !taken.contains(cid) else { continue }
+            let rest = String(cid.dropFirst(baseId.count))
+            let name: String
+            if rest.hasPrefix(".") {
+                name = String(rest.dropFirst())
+            } else if rest.allSatisfy(\.isNumber) {
+                name = "WeChat" + rest
+            } else { continue }
+            guard !name.isEmpty,
+                  fm.fileExists(atPath: containerPath(for: cid) + "/Data/Documents/xwechat_files")
+            else { continue }
+            found.append(Instance(
+                name: name, appPath: "/Applications/\(name).app", bundleId: cid,
+                isBase: false, running: false,
+                dataSize: withSize ? dirSize(containerPath(for: cid)) : "…",
+                idMismatch: false, orphan: true))
+        }
+        return found
     }
 
     static func nextFreeName() -> String {

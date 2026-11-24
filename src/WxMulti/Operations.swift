@@ -282,6 +282,120 @@ extension Ops {
     }
 }
 
+// MARK: - 残留数据
+
+extension Ops {
+    /// 把残留数据容器移入废纸篓。只处理 orphan 行，其余忽略
+    static func trashOrphans(
+        _ targets: [Instance],
+        progress: @escaping (Progress) -> Void,
+        done: @escaping ([String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var errors: [String] = []
+            let list = targets.filter(\.orphan)
+            for (i, inst) in list.enumerated() {
+                DispatchQueue.main.async {
+                    progress(Progress(text: "正在移除 \(inst.name) 的数据…",
+                                      fraction: Double(i) / Double(list.count)))
+                }
+                let path = Core.containerPath(for: inst.bundleId)
+                do {
+                    try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+                } catch {
+                    errors.append("\(inst.name)：移入废纸篓失败 \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async { done(errors) }
+        }
+    }
+}
+
+// MARK: - 清理缓存
+
+extension Ops {
+    /// 一类可清理的缓存。paths 是要移入废纸篓的具体条目（目录里的子项），
+    /// 不动目录本身，免得微信下次启动找不到目录出错
+    struct CacheKind {
+        var title: String
+        var detail: String
+        var defaultOn: Bool
+        var paths: [String] = []
+        var bytes: Int64 = 0
+    }
+
+    /// 列出这些实例的可清理缓存并算好大小。耗时（要跑 du），在后台线程调用。
+    ///
+    /// 只收微信重启后会自己重建的东西。聊天里的图片、视频、文件（msg/）和聊天记录数据库
+    /// （db_storage/）一律不碰，那些在微信「设置 → 存储空间」里按聊天管理。
+    static func cacheKinds(for targets: [Instance]) -> [CacheKind] {
+        var kinds = [
+            CacheKind(title: "临时文件", detail: "下载中断留下的残片等", defaultOn: true),
+            CacheKind(title: "运行日志", detail: "微信自己写的日志", defaultOn: true),
+            CacheKind(title: "账号缓存", detail: "头像、表情等缓存，用到时会重新下载", defaultOn: true),
+            CacheKind(title: "小程序和网页缓存", detail: "清掉后部分小程序可能要重新登录", defaultOn: false),
+        ]
+        let fm = FileManager.default
+        func children(_ dir: String) -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).map { dir + "/" + $0 }
+        }
+        for inst in targets {
+            let data = Core.containerPath(for: inst.dataId) + "/Data"
+            let docs = data + "/Documents"
+            kinds[0].paths += children(data + "/tmp")
+            kinds[1].paths += children(docs + "/app_data/log")
+            for acct in children(docs + "/xwechat_files")
+            where (acct as NSString).lastPathComponent != "all_users" {
+                kinds[2].paths += children(acct + "/cache")
+            }
+            kinds[3].paths += children(docs + "/app_data/radium/web/profiles")
+        }
+        for i in kinds.indices { kinds[i].bytes = diskBytes(kinds[i].paths) }
+        return kinds
+    }
+
+    /// 一批路径占用的磁盘字节数
+    static func diskBytes(_ paths: [String]) -> Int64 {
+        guard !paths.isEmpty else { return 0 }
+        // -c 在最后一行给总计，单位 KB
+        let r = Core.run("/usr/bin/du", ["-skc"] + paths)
+        let last = r.out.components(separatedBy: .newlines).last ?? ""
+        return (Int64(last.components(separatedBy: "\t").first ?? "") ?? 0) * 1024
+    }
+
+    /// 把选中的缓存移入废纸篓。任一实例在运行就整体拒绝：微信开着时删它的文件容易出问题
+    static func cleanCaches(
+        _ kinds: [CacheKind],
+        of targets: [Instance],
+        progress: @escaping (Progress) -> Void,
+        done: @escaping ([String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let r = targets.first(where: { Core.isRunning($0.binPath) }) {
+                DispatchQueue.main.async { done(["\(r.name)：正在运行，请先退出"]) }
+                return
+            }
+            let paths = kinds.flatMap(\.paths)
+            var failed = 0
+            for (i, p) in paths.enumerated() {
+                if i % 10 == 0 {
+                    DispatchQueue.main.async {
+                        progress(Progress(text: "正在清理缓存…", fraction: Double(i) / Double(paths.count)))
+                    }
+                }
+                guard FileManager.default.fileExists(atPath: p) else { continue }
+                do {
+                    try FileManager.default.trashItem(at: URL(fileURLWithPath: p), resultingItemURL: nil)
+                } catch {
+                    failed += 1
+                }
+            }
+            let errors = failed > 0 ? ["有 \(failed) 项没能移入废纸篓，其余已清理"] : []
+            DispatchQueue.main.async { done(errors) }
+        }
+    }
+}
+
 // MARK: - 数据容器迁移
 
 extension Ops {
