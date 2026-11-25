@@ -65,10 +65,15 @@ make_trimmed_entitlements() {
 # 副本改了 bundle id，Sparkle 的 XPC 服务名变成 <副本 id>-spks，沙盒白名单却只放行原版的
 # com.tencent.xinWeChat-spks，安装器连不上、超时退出又被拉起，无限循环拖慢整机。
 # 就算装上也是官方原包，会把副本还原成原版 id。所以副本不自己更新，原版升级后重建同步。
+# 光写两个开关键不够：微信启动时在代码里重新打开自动检查（偏好写回 SUEnableAutomaticChecks=1、
+# 间隔 300 秒），偏好优先于 Info.plist。真正起作用的是把 SUPublicEDKey 改成非法 base64，
+# Sparkle 校验公钥失败直接不启动更新器，不检查、不下载、无弹窗。
+DISABLED_ED_KEY="disabled-by-wxmulti!"
 disable_auto_update() {
   local plist="$1/Contents/Info.plist"
   plutil -replace SUEnableAutomaticChecks -bool NO "$plist" \
-    && plutil -replace SUAllowsAutomaticUpdates -bool NO "$plist"
+    && plutil -replace SUAllowsAutomaticUpdates -bool NO "$plist" \
+    && plutil -replace SUPublicEDKey -string "$DISABLED_ED_KEY" "$plist"
 }
 
 auto_update_disabled() {
@@ -76,6 +81,7 @@ auto_update_disabled() {
   for k in SUEnableAutomaticChecks SUAllowsAutomaticUpdates; do
     [[ "$(/usr/libexec/PlistBuddy -c "Print :$k" "$plist" 2>/dev/null)" == "false" ]] || return 1
   done
+  [[ "$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$plist" 2>/dev/null)" == "$DISABLED_ED_KEY" ]]
 }
 
 # 用户偏好里存过的 SUEnableAutomaticChecks=YES 会盖过 Info.plist，一并改掉；

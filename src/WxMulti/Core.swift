@@ -150,7 +150,7 @@ enum Core {
             .contains("com.apple.developer.team-identifier")
     }
 
-    /// 写进副本 Info.plist、关掉微信内置 Sparkle 自动更新的两个键。
+    /// 关掉微信内置 Sparkle 自动更新。
     ///
     /// 副本改了 bundle id，Sparkle 的 XPC 服务名跟着变成 <副本 id>-spks，但沙盒
     /// entitlements 的 mach-lookup 白名单写死的是原版的 com.tencent.xinWeChat-spks。
@@ -158,21 +158,32 @@ enum Core {
     /// 又被拉起，每轮在 ~/Library/Caches/<id>/org.sparkle-project.Sparkle/Launcher 下
     /// 解压一份新 Updater.app，lsd / tccd / trustd 跟着反复登记、验签，整机周期性卡顿。
     /// 就算打通，装上的也是官方原包，id 和签名被还原，副本就废了。所以副本一律不自己
-    /// 更新，原版升级后由本工具同步。SUAllowsAutomaticUpdates=NO 关掉后台静默下载安装，
-    /// SUEnableAutomaticChecks=NO 关掉定时检查。
+    /// 更新，原版升级后由本工具同步。
+    ///
+    /// 光写 SUEnableAutomaticChecks / SUAllowsAutomaticUpdates=NO 不够：微信启动时在代码里
+    /// 调 setAutomaticallyChecksForUpdates:、setUpdateCheckInterval:（偏好里写回
+    /// SUEnableAutomaticChecks=1、SUScheduledCheckInterval=300），偏好优先于 Info.plist，
+    /// 照样每 5 分钟检查、下载并弹「新版本可以安装」。真正起作用的是把 SUPublicEDKey 改成
+    /// 解不出 base64 的值：Sparkle startUpdater 校验公钥失败直接不启动，不检查、不下载、
+    /// 不拉安装器，日志只留一行 "The provided EdDSA key could not be decoded."，无弹窗。
+    /// 两个开关键继续写着，算是多一层。
     static let noUpdateKeys = ["SUEnableAutomaticChecks", "SUAllowsAutomaticUpdates"]
+    static let edKeyKey = "SUPublicEDKey"
+    /// 含 '-' '!'，不是合法 base64，Sparkle 判为无效公钥
+    static let disabledEDKey = "disabled-by-wxmulti!"
 
     /// 往副本 Info.plist 写入关闭自动更新的键。改了 Info.plist 必须随后重签名
     static func disableAutoUpdate(_ appPath: String) -> Bool {
         let plist = appPath + "/Contents/Info.plist"
         return noUpdateKeys.allSatisfy {
             run("/usr/bin/plutil", ["-replace", $0, "-bool", "NO", plist]).ok
-        }
+        } && run("/usr/bin/plutil", ["-replace", edKeyKey, "-string", disabledEDKey, plist]).ok
     }
 
     static func autoUpdateDisabled(_ appPath: String) -> Bool {
         let plist = NSDictionary(contentsOfFile: appPath + "/Contents/Info.plist")
         return noUpdateKeys.allSatisfy { (plist?[$0] as? Bool) == false }
+            && (plist?[edKeyKey] as? String) == disabledEDKey
     }
 
     /// 用户偏好里 Sparkle 存过 SUEnableAutomaticChecks = YES 的话会盖过 Info.plist，

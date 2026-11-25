@@ -134,9 +134,9 @@ v2.2.0 及更早版本创建的副本会有这个问题。签名时用的 `codes
 
 升级只影响原版。副本还是旧版本，能继续用，列表里会标 `↑ 可同步新版`，退出副本后右键「同步新版」即可跟上，数据和图标都保留。
 
-副本关掉了微信自带的自动更新（Info.plist 写入 `SUEnableAutomaticChecks` / `SUAllowsAutomaticUpdates` 为 NO），不会自己升级。原因是副本改了 bundle id 后，微信内置 Sparkle 更新器的 XPC 服务名变成 `<副本 id>-spks`，而沙盒权限只放行原版的 `com.tencent.xinWeChat-spks`：安装器连不上、超时退出又被拉起，无限循环，每轮都在 `~/Library/Caches/<副本 id>/org.sparkle-project.Sparkle/Launcher` 下解压一份新 Updater，`lsd` / `tccd` / `trustd` 跟着反复登记和验签，整机周期性卡顿。就算能装上，装的也是官方原包，会把副本还原成原版 id。
+副本关掉了微信自带的自动更新，不会自己升级。做法是把副本 Info.plist 里的 `SUPublicEDKey` 改成无效值，让微信内置的 Sparkle 更新器启动时校验公钥失败、直接不工作；`SUEnableAutomaticChecks` / `SUAllowsAutomaticUpdates` 也写成 NO。只写这两个开关键不够，微信启动时会在代码里重新打开自动检查（每 5 分钟一次），副本照样下载新版并弹「新版本可以安装」，点安装就报「更新错误」。原因是副本改了 bundle id 后，微信内置 Sparkle 更新器的 XPC 服务名变成 `<副本 id>-spks`，而沙盒权限只放行原版的 `com.tencent.xinWeChat-spks`：安装器连不上、超时退出又被拉起，无限循环，每轮都在 `~/Library/Caches/<副本 id>/org.sparkle-project.Sparkle/Launcher` 下解压一份新 Updater，`lsd` / `tccd` / `trustd` 跟着反复登记和验签，整机周期性卡顿。就算能装上，装的也是官方原包，会把副本还原成原版 id。
 
-v2.4.1 及更早版本创建的副本没关自动更新，会标 `⚠︎ 需修复`，退出后右键「修复」即可。确认循环是否存在：
+v2.6.0 及更早版本创建的副本没彻底关掉自动更新，会标 `⚠︎ 需修复`，退出后右键「修复」即可。确认循环是否存在：
 
 ```bash
 pgrep -fl 'WeChat2.app/Contents/Frameworks/Sparkle'                  # 反复出现新 pid 就是在循环
